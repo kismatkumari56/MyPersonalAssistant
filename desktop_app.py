@@ -6,6 +6,7 @@ import threading
 import requests
 import uuid
 import os
+import tempfile
 
 from tts import TTSManager
 
@@ -58,21 +59,110 @@ class JugnuApp:
         self.root.after(250, self.warm_up)
 
     def load_history(self):
+        """Load valid, non-empty conversations from the history file."""
         try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, list) else []
-        except (FileNotFoundError, json.JSONDecodeError):
+            with open(HISTORY_FILE, "r", encoding="utf-8") as history_file:
+                data = json.load(history_file)
+
+            if not isinstance(data, list):
+                return []
+
+            valid_chats = []
+            seen_ids = set()
+
+            for chat in data:
+                if not isinstance(chat, dict):
+                    continue
+
+                chat_id = chat.get("id")
+                messages = chat.get("messages")
+
+                if not isinstance(chat_id, str) or not chat_id.strip():
+                    continue
+                if chat_id in seen_ids:
+                    continue
+                if not isinstance(messages, list):
+                    continue
+
+                valid_messages = []
+                for message in messages:
+                    if not isinstance(message, dict):
+                        continue
+
+                    role = message.get("role")
+                    content = message.get("content")
+
+                    if role not in ("user", "assistant"):
+                        continue
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+
+                    valid_messages.append({
+                        "role": role,
+                        "content": content
+                    })
+
+                # Empty conversations should never appear in saved history.
+                if not valid_messages:
+                    continue
+
+                chat["messages"] = valid_messages
+                title = chat.get("title")
+                chat["title"] = title.strip() if isinstance(title, str) and title.strip() else "New Chat"
+
+                valid_chats.append(chat)
+                seen_ids.add(chat_id)
+
+            return valid_chats
+
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
             return []
 
     def save_history(self):
-        # Persist only conversations containing messages; never save empty "New Chat" rows.
-        saved_chats = [chat for chat in self.chats if chat.get("messages")]
+        """Save non-empty conversations atomically to avoid partial JSON files."""
+        saved_chats = [
+            chat for chat in self.chats
+            if isinstance(chat, dict)
+            and isinstance(chat.get("messages"), list)
+            and any(
+                isinstance(message, dict)
+                and message.get("role") in ("user", "assistant")
+                and isinstance(message.get("content"), str)
+                and message["content"].strip()
+                for message in chat["messages"]
+            )
+        ]
+
+        history_path = os.path.abspath(HISTORY_FILE)
+        history_dir = os.path.dirname(history_path)
+        temp_path = None
+
         try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(saved_chats, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            self.set_status(f"Could not save history: {e}")
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=history_dir,
+                suffix=".tmp",
+                delete=False
+            ) as temp_file:
+                temp_path = temp_file.name
+                json.dump(saved_chats, temp_file, ensure_ascii=False, indent=2)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            # The temporary file is in the same directory, so replacement is atomic.
+            os.replace(temp_path, history_path)
+            temp_path = None
+
+        except (OSError, TypeError, ValueError) as error:
+            self.set_status(f"Could not save history: {error}")
+
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     def load_settings(self):
         try:
@@ -406,6 +496,8 @@ class JugnuApp:
         try:
             chat = next((c for c in self.chats if c.get("id") == chat_id), None)
             if not chat:
+                # The conversation may have been cleared while the request was running.
+                self.root.after(0, lambda: self.finish_answer(None, chat_id))
                 return
             # Keep recent context only, to reduce prompt size and improve latency.
             recent = chat.get("messages", [])[-10:]
@@ -443,7 +535,7 @@ class JugnuApp:
         chat = self.current_chat()
         if chat_id:
             chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-        if chat:
+        if chat and isinstance(answer, str) and answer.strip():
             chat["messages"].append({"role": "assistant", "content": answer})
             self.save_history()
         # Only display if the user is still viewing the chat that received the answer.

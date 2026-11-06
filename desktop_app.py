@@ -167,7 +167,8 @@ class JugnuApp:
         self.input_box = tk.Text(self.bottom, height=2, wrap="word", font=("Segoe UI", 11),
                                  relief="flat", padx=10, pady=10, undo=True)
         self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.input_box.bind("<Control-Return>", self.send_message)
+        self.input_box.bind("<Return>", self.send_message)
+        self.input_box.bind("<Shift-Return>", lambda event: None)
         self.send_btn = tk.Button(self.bottom, text="➤  Send", command=self.send_message,
                                   relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
         self.send_btn.pack(side="right")

@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
-from zoneinfo import ZoneInfo
 import json
 import threading
 import requests
@@ -415,7 +414,7 @@ class JugnuApp:
                 "content": (
                     "You are JUGNU, a helpful, friendly personal AI assistant. "
                     "Give clear, concise answers by default (usually 2-5 sentences). "
-                    "Use easy language. If more detail is needed, provide it."
+                    "Use easy language. If more detail is needed, provide it. "
                     f"Current local date and time: {local_datetime_text()}. "
                     "For date/time questions, use this exact current context; never guess."
                 )

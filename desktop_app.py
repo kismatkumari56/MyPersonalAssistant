@@ -329,21 +329,179 @@ class JugnuApp:
         tk.Label(wrapper, text="What would you like to explore today?",
                  font=("Segoe UI", 12), bg=c["bg"], fg=c["accent"]).pack()
 
+    def copy_message(self, text):
+        """Copy the complete message to the system clipboard."""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            # Keep the clipboard contents available after the app closes.
+            self.root.update()
+            self.set_status("Message copied!")
+        except tk.TclError:
+            self.set_status("Could not copy message")
+
     def add_bubble(self, role, text):
         c = self.colors
+        # Older saved messages may contain trailing blank lines. Remove only
+        # trailing whitespace so bubbles do not retain unnecessary empty height.
+        text = str(text).rstrip()
         is_user = role == "user"
+        bubble_color = c["user"] if is_user else c["assistant"]
+
         row = tk.Frame(self.messages_frame, bg=c["bg"])
         row.pack(fill="x", pady=7, padx=8)
-        bubble = tk.Frame(row, bg=c["user"] if is_user else c["assistant"])
-        bubble.pack(side="right" if is_user else "left", padx=(40, 0) if is_user else (0, 40))
-        name = "You" if is_user else "🤖 JUGNU"
-        tk.Label(bubble, text=name, bg=bubble["bg"], fg=c["accent"],
-                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=12, pady=(8, 1))
-        tk.Label(bubble, text=text, bg=bubble["bg"], fg=c["text"],
-                 font=("Segoe UI", 10), justify="left", anchor="w",
-                 wraplength=680).pack(fill="x", padx=12, pady=(1, 10))
-        self.root.update_idletasks()
 
+        # A Canvas provides rounded corners while the child frame holds the
+        # normal Tkinter widgets and keeps the existing message layout intact.
+        bubble_canvas = tk.Canvas(
+            row,
+            bg=c["bg"],
+            highlightthickness=0,
+            borderwidth=0
+        )
+        bubble_canvas.pack(
+            side="right" if is_user else "left",
+            padx=(40, 0) if is_user else (0, 40)
+        )
+
+        content = tk.Frame(bubble_canvas, bg=bubble_color)
+        content_window = bubble_canvas.create_window(
+            (12, 9),
+            window=content,
+            anchor="nw"
+        )
+
+        def draw_rounded_bubble(_event=None):
+            """Resize and redraw the rounded background around its contents."""
+            try:
+                content.update_idletasks()
+                content_width = content.winfo_reqwidth()
+                content_height = content.winfo_reqheight()
+                padding_x = 12
+                padding_y = 9
+                canvas_width = content_width + padding_x * 2
+                canvas_height = content_height + padding_y * 2
+
+                bubble_canvas.configure(
+                    width=canvas_width,
+                    height=canvas_height,
+                    scrollregion=(0, 0, canvas_width, canvas_height)
+                )
+                bubble_canvas.coords(content_window, padding_x, padding_y)
+                bubble_canvas.itemconfigure(
+                    content_window,
+                    width=content_width
+                )
+
+                bubble_canvas.delete("rounded_bubble")
+                radius = min(14, canvas_width // 2, canvas_height // 2)
+                points = [
+                    radius, 0,
+                    canvas_width - radius, 0,
+                    canvas_width, 0,
+                    canvas_width, radius,
+                    canvas_width, canvas_height - radius,
+                    canvas_width, canvas_height,
+                    canvas_width - radius, canvas_height,
+                    radius, canvas_height,
+                    0, canvas_height,
+                    0, canvas_height - radius,
+                    0, radius,
+                    0, 0
+                ]
+                bubble_canvas.create_polygon(
+                    points,
+                    smooth=True,
+                    splinesteps=24,
+                    fill=bubble_color,
+                    outline=bubble_color,
+                    tags="rounded_bubble"
+                )
+                bubble_canvas.tag_lower("rounded_bubble")
+            except tk.TclError:
+                # Ignore a pending resize if this bubble is being destroyed.
+                pass
+
+        name = "You" if is_user else "🤖 JUGNU"
+        tk.Label(
+            content,
+            text=name,
+            bg=bubble_color,
+            fg=c["accent"],
+            font=("Segoe UI", 9, "bold"),
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=(8, 1))
+
+        # Size the bubble to the message instead of giving every message
+        # the same wide Text widget. Long lines are capped and wrap naturally.
+        message_lines = text.splitlines() or [""]
+        longest_line = max((len(line) for line in message_lines), default=0)
+        text_width = max(12, min(70, longest_line + 2))
+
+        message_text = tk.Text(
+            content,
+            wrap="word",
+            height=1,
+            width=text_width,
+            font=("Segoe UI", 10),
+            bg=bubble_color,
+            fg=c["text"],
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=0,
+            pady=0,
+            cursor="xterm",
+            exportselection=True,
+            takefocus=True
+        )
+        message_text.insert("1.0", text)
+        message_text.configure(state="disabled")
+        message_text.pack(fill="x", padx=12, pady=(1, 4))
+
+        def update_message_height(_event=None):
+            """Size the Text widget to its actual final displayed line."""
+            try:
+                first_line = message_text.dlineinfo("1.0")
+                last_line = message_text.dlineinfo("end-1c")
+
+                if first_line is None or last_line is None:
+                    return
+
+                line_height = max(1, first_line[3])
+                required_height = max(
+                    1,
+                    (last_line[1] - first_line[1]) // line_height + 1
+                )
+
+                if int(message_text.cget("height")) != required_height:
+                    message_text.configure(height=required_height)
+                    self.root.after_idle(draw_rounded_bubble)
+            except (tk.TclError, TypeError, IndexError, ZeroDivisionError):
+                pass
+
+        message_text.bind("<Configure>", update_message_height)
+        content.bind("<Configure>", draw_rounded_bubble)
+
+        copy_btn = tk.Button(
+            content,
+            text="📋 Copy",
+            command=lambda message=text: self.copy_message(message),
+            font=("Segoe UI", 8),
+            relief="flat",
+            cursor="hand2",
+            bg=bubble_color,
+            fg=c["muted"],
+            activebackground=c["accent"],
+            activeforeground="white",
+            padx=8,
+            pady=2
+        )
+        copy_btn.pack(anchor="e", padx=10, pady=(0, 7))
+
+        self.root.update_idletasks()
+        draw_rounded_bubble()
+        self.root.after_idle(update_message_height)
     def set_status(self, text):
         self.status.configure(text="• " + text)
 

@@ -1,9 +1,17 @@
+import argparse
 import ast
 import datetime
 import operator
 import re
 
 import requests
+
+from models import (
+    DEFAULT_MODEL,
+    fetch_local_models,
+    format_bytes,
+    resolve_active_model,
+)
 
 # Optional conversational openers/closers so polite phrasing still triggers
 # local time/date replies without allowing unrelated sentences to match.
@@ -89,7 +97,7 @@ def is_time_question(text):
 
 # ---------------- CONFIGURATION ----------------
 
-MODEL = "llama3.2:3b"
+MODEL = DEFAULT_MODEL
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 SYSTEM_PROMPT = """
@@ -201,12 +209,13 @@ def calculate(expression):
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message):
+def ask_ai(user_message, model=None):
+    target_model = model or MODEL
     try:
         response = requests.post(
             OLLAMA_URL,
             json={
-                "model": MODEL,
+                "model": target_model,
                 "messages": [
                     {
                         "role": "system",
@@ -249,17 +258,31 @@ def ask_ai(user_message):
 
 def show_help():
     print("\nAvailable commands:")
-    print("1. time       - Show current time")
-    print("2. date       - Show today's date")
-    print("3. calculate  - Calculate a mathematical expression")
-    print("4. help       - Show available commands")
-    print("5. bye        - Exit the assistant")
+    print("1. time           - Show current time")
+    print("2. date           - Show today's date")
+    print("3. calculate      - Calculate a mathematical expression")
+    print("4. /models        - List locally installed Ollama models")
+    print("5. /model <name>  - Switch the active model")
+    print("6. help           - Show available commands")
+    print("7. bye            - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant():
+def run_assistant(model=None):
+    global MODEL
+    if model:
+        MODEL = model
+    else:
+        # Auto-discover local models and fallback if needed
+        try:
+            available = fetch_local_models()
+            if available:
+                MODEL = resolve_active_model(MODEL, available)
+        except Exception:
+            pass
+
     greet()
 
     while True:
@@ -292,16 +315,41 @@ def run_assistant():
             expression = user_input[10:].strip()
             print("\nAssistant:", calculate(expression))
 
+        # List models
+        elif command in ["/models", "models"]:
+            print("\nAssistant: Fetching installed Ollama models...")
+            models_list = fetch_local_models()
+            if not models_list:
+                print("No installed models found or Ollama is offline.")
+            else:
+                print(f"\nInstalled Models (Active: {MODEL}):")
+                for m in models_list:
+                    star = "* " if m.name == MODEL else "  "
+                    print(f" {star}{m.display_name}")
+
+        # Switch model
+        elif command.startswith("/model ") or command.startswith("model ") or command.startswith("/switch "):
+            parts = user_input.split(maxsplit=1)
+            new_model = parts[1].strip() if len(parts) > 1 else ""
+            if new_model:
+                MODEL = new_model
+                print(f"\nAssistant: Switched active model to '{MODEL}'.")
+            else:
+                print(f"\nAssistant: Current active model is '{MODEL}'.")
+
         # General AI question
         else:
-            print("\nAssistant: Thinking...")
-            answer = ask_ai(user_input)
+            print(f"\nAssistant: Thinking ({MODEL})...")
+            answer = ask_ai(user_input, model=MODEL)
             print("\nAssistant:", answer)
 
 
 # ---------------- START ----------------
 
 if __name__ == "__main__":
-    run_assistant()
+    parser = argparse.ArgumentParser(description="JUGNU Terminal Assistant")
+    parser.add_argument("--model", type=str, default=None, help="Ollama model to use")
+    args = parser.parse_args()
+    run_assistant(model=args.model)
 
 

@@ -67,6 +67,24 @@ STRINGS = {
         "error_generic": "Error: {error}",
         # Answered locally, without calling the model
         "time_answer": "The current local date and time is: {when}",
+        # Persona system
+        "persona_btn": "🎭  {name}",
+        "persona_menu_title": "Choose Persona",
+        "persona_manage": "⚙️  Manage Personas…",
+        "persona_dialog_title": "Assistant Personas",
+        "persona_new_btn": "➕  New Persona",
+        "persona_save_btn": "💾  Save Persona",
+        "persona_delete_btn": "🗑  Delete Persona",
+        "persona_name_label": "Persona Name:",
+        "persona_desc_label": "Short Description:",
+        "persona_prompt_label": "System Instructions / Prompt:",
+        "persona_temp_label": "Creativity / Temperature: {val}",
+        "persona_icon_label": "Icon (Emoji):",
+        "persona_builtin_badge": "🔒 Built-in",
+        "persona_custom_badge": "✨ Custom",
+        "persona_delete_confirm": "Are you sure you want to delete custom persona '{name}'?",
+        "persona_validation_name": "Please enter a persona name.",
+        "persona_validation_prompt": "Please enter system instructions for the persona.",
         # Added to the system prompt so the model replies in this language
         "prompt_language_rule": ("Always answer in clear and simple English only. "
                                  "Never answer in Hindi or Hinglish. "),
@@ -125,6 +143,24 @@ STRINGS = {
         "error_generic": "Error: {error}",
         # Answered locally, without calling the model
         "time_answer": "Abhi local date aur time hai: {when}",
+        # Persona system
+        "persona_btn": "🎭  {name}",
+        "persona_menu_title": "Persona Chuno",
+        "persona_manage": "⚙️  Personas Manage Karo…",
+        "persona_dialog_title": "Assistant Personas",
+        "persona_new_btn": "➕  Naya Persona",
+        "persona_save_btn": "💾  Save Karo",
+        "persona_delete_btn": "🗑  Delete Karo",
+        "persona_name_label": "Persona Ka Naam:",
+        "persona_desc_label": "Chhota Description:",
+        "persona_prompt_label": "System Instructions / Prompt:",
+        "persona_temp_label": "Creativity / Temperature: {val}",
+        "persona_icon_label": "Icon (Emoji):",
+        "persona_builtin_badge": "🔒 Built-in",
+        "persona_custom_badge": "✨ Custom",
+        "persona_delete_confirm": "Kya aap '{name}' custom persona delete karna chahte hain?",
+        "persona_validation_name": "Kripya persona ka naam dalein.",
+        "persona_validation_prompt": "Kripya persona ke liye system instructions dalein.",
         # Added to the system prompt so the model replies in this language
         "prompt_language_rule": ("Always answer in Hinglish: Hindi written in the English (Roman) "
                                  "alphabet, mixed naturally with common English words, the way "
@@ -173,8 +209,9 @@ def get_string(language, key, **kwargs):
     return text
 
 
-def build_system_prompt(language, now_text):
+def build_system_prompt(language, now_text, persona_prompt=None):
     """System prompt for the model: persona, reply-language rule, and the clock."""
-    return (SYSTEM_PROMPT_INTRO
+    intro = (str(persona_prompt).strip() + " ") if persona_prompt and str(persona_prompt).strip() else SYSTEM_PROMPT_INTRO
+    return (intro
             + get_string(language, "prompt_language_rule")
             + SYSTEM_PROMPT_CLOCK.format(now=now_text))

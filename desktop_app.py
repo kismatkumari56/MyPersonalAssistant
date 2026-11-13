@@ -18,12 +18,21 @@ from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, cl
 from assistant import calculate, is_time_question as detect_time_question
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import render_markdown, plain_text
+from personas import (
+    DEFAULT_PERSONAS_FILE,
+    Persona,
+    PersonaManager,
+    get_default_manager,
+    get_persona,
+    list_personas,
+)
 
 APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "llama3.2:3b"
 HISTORY_FILE = "jugnu_history.json"
 SETTINGS_FILE = "jugnu_settings.json"
+PERSONAS_FILE = "jugnu_personas.json"
 MAX_LIST_TITLE = 34    # longer chat titles are shortened with "…" in the sidebar list
 MAX_TITLE_LENGTH = 60  # longest title a user can give a chat
 # Markdown styles that indent their lines; bubbles get a few extra columns so those lines do not wrap early.
@@ -154,6 +163,11 @@ class JugnuApp:
         self.vw = {}           # its widgets, so theme and language changes can update them
         self.voice_enabled = self.load_voice_setting()
         self.language = self.load_language_setting()
+        self.personas_file = PERSONAS_FILE
+        self.persona_manager = PersonaManager(self.personas_file)
+        self.default_persona_id = self.load_persona_setting()
+        self.persona_win = None  # the Persona Manager window while it is open
+        self.pw = {}            # its widgets, so theme and language changes can update them
         self._status = ("status_ready", {})  # Remembered so the status line can be re-translated.
         self.read_buttons = []  # "Read aloud" buttons currently on screen
         self.stop_shown = False  # is the header Stop button visible?
@@ -231,6 +245,9 @@ class JugnuApp:
                 chat["messages"] = valid_messages
                 title = chat.get("title")
                 chat["title"] = title.strip() if isinstance(title, str) and title.strip() else "New Chat"
+                persona = chat.get("persona")
+                if isinstance(persona, str) and persona.strip():
+                    chat["persona"] = persona.strip()
 
                 valid_chats.append(chat)
                 seen_ids.add(chat_id)
@@ -334,12 +351,30 @@ class JugnuApp:
         except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
             return normalize_language(None)
 
+    def load_persona_setting(self):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                val = data.get("default_persona")
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+            pass
+        return "default"
+
     def save_settings(self):
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump({"dark_mode": self.dark_mode, "voice_enabled": self.voice_enabled,
-                           "language": self.language, "voice_rate": self.voice_rate,
-                           "voice_volume": self.voice_volume, "voice_id": self.voice_id}, f)
+                json.dump({
+                    "dark_mode": self.dark_mode,
+                    "voice_enabled": self.voice_enabled,
+                    "language": self.language,
+                    "voice_rate": self.voice_rate,
+                    "voice_volume": self.voice_volume,
+                    "voice_id": self.voice_id,
+                    "default_persona": getattr(self, "default_persona_id", "default"),
+                }, f)
         except OSError:
             pass
 
@@ -387,6 +422,9 @@ class JugnuApp:
         self.voice_settings_btn.pack(fill="x", padx=12, pady=(0, 8))
         if not self.tts.available:
             self.voice_settings_btn.configure(state="disabled")
+        self.persona_sidebar_btn = Button(self.sidebar, command=self.open_persona_manager,
+                                          relief="flat", pady=10)
+        self.persona_sidebar_btn.pack(fill="x", padx=12, pady=(0, 8))
         self.language_btn = Button(self.sidebar, command=self.toggle_language,
                                       relief="flat", pady=10)
         self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
@@ -408,7 +446,10 @@ class JugnuApp:
         self.status.pack(side="right", fill="y")
         # Shown only while speech is playing (see poll_speech); packed after status, so it sits left of it.
         self.stop_btn = Button(self.header, text="⏹  Stop", command=self.stop_speaking,
+                               relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.persona_btn = Button(self.header, command=self.show_persona_menu,
                                   relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.persona_btn.pack(side="right", padx=(0, 10))
 
         self.chat_area = tk.Frame(self.content)
         self.chat_area.pack(fill="both", expand=True, padx=12, pady=12)
@@ -581,9 +622,11 @@ class JugnuApp:
         self.history_list.configure(bg=c["sidebar"], fg=c["text"],
                                     selectbackground=c["accent"], selectforeground="white")
         for btn in [self.new_btn, self.theme_btn, self.voice_btn, self.language_btn,
-                    self.voice_settings_btn]:
+                    self.voice_settings_btn, self.persona_sidebar_btn]:
             btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
                           activeforeground="white", cursor="hand2")
+        self.persona_btn.configure(bg=c["accent2"], fg="white", activebackground=c["accent"],
+                                   activeforeground="white", cursor="hand2")
         self.voice_btn.configure(text=self.voice_button_text())
         self.clear_btn.configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
                                  activeforeground=c["text"], cursor="hand2")
@@ -592,6 +635,8 @@ class JugnuApp:
                                 activeforeground="white", cursor="hand2")
         self.theme_btn.configure(text=self.theme_button_text())
         self.update_voice_window()
+        self.update_persona_button()
+        self.update_persona_window()
         self.refresh_history_list()
         self.display_chat()
 
@@ -770,6 +815,12 @@ class JugnuApp:
         self.vw = {}
 
     def on_close(self):
+        if self.persona_win is not None:
+            try:
+                self.persona_win.destroy()
+            except Exception:
+                pass
+        self.persona_win = None
         if self._resize_timer:
             try:
                 self.root.after_cancel(self._resize_timer)
@@ -801,13 +852,400 @@ class JugnuApp:
         self.clear_btn.configure(text=self.t("clear_chat_btn"))
         self.voice_btn.configure(text=self.voice_button_text())
         self.voice_settings_btn.configure(text=self.t("voice_settings_btn"))
+        if hasattr(self, "persona_sidebar_btn"):
+            self.persona_sidebar_btn.configure(text=self.t("persona_manage"))
         self.update_voice_window()
+        self.update_persona_button()
+        self.update_persona_window()
         self.language_btn.configure(text=self.t("language_btn", name=self.t("language_name")))
         self.theme_btn.configure(text=self.theme_button_text())
         self.header_title.configure(text=self.t("header_title"))
         self.send_btn.configure(text=self.t("send_btn"))
         key, kwargs = self._status
         self.set_status(key, **kwargs)
+
+    # ---------- Persona Management ----------
+    def get_persona_manager(self):
+        return getattr(self, "persona_manager", None) or get_default_manager()
+
+    def current_persona(self):
+        chat = self.current_chat()
+        persona_id = (chat.get("persona") if chat else None) or getattr(self, "default_persona_id", "default")
+        return self.get_persona_manager().get(persona_id)
+
+    def set_chat_persona(self, persona_id):
+        chat = self.current_chat()
+        if chat:
+            chat["persona"] = persona_id
+            self.save_history()
+        self.default_persona_id = persona_id
+        self.save_settings()
+        self.update_persona_button()
+        if self.persona_win is not None:
+            self.update_persona_window()
+
+    def update_persona_button(self):
+        if not hasattr(self, "persona_btn"):
+            return
+        p = self.current_persona()
+        self.persona_btn.configure(text=f"{p.icon}  {p.name}")
+
+    def show_persona_menu(self, _event=None):
+        if not hasattr(self, "persona_btn"):
+            return
+        c = self.colors
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.configure(bg=c["panel"], fg=c["text"], activebackground=c["accent"], activeforeground="white")
+        chat = self.current_chat()
+        active_persona_id = (chat.get("persona") if chat else None) or getattr(self, "default_persona_id", "default")
+
+        for persona in self.get_persona_manager().all():
+            mark = "✓ " if persona.id == active_persona_id else "   "
+            label = f"{mark}{persona.icon}  {persona.name} (T: {persona.temperature})"
+            menu.add_command(label=label, command=lambda pid=persona.id: self.set_chat_persona(pid))
+
+        menu.add_separator()
+        menu.add_command(label=self.t("persona_manage"), command=self.open_persona_manager)
+
+        try:
+            x = self.persona_btn.winfo_rootx()
+            y = self.persona_btn.winfo_rooty() + self.persona_btn.winfo_height()
+            menu.tk_popup(x, y)
+        except tk.TclError:
+            pass
+        finally:
+            menu.grab_release()
+
+    def open_persona_manager(self):
+        if self.persona_win is not None:
+            self.persona_win.lift()
+            self.persona_win.focus_set()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(self.t("persona_dialog_title"))
+        win.geometry("700x560")
+        win.minsize(620, 480)
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", self.close_persona_manager)
+        self.persona_win = win
+
+        c = self.colors
+        w = self.pw = {"win": win}
+
+        header_frame = tk.Frame(win, bg=c["accent"], padx=18, pady=12)
+        header_frame.pack(fill="x")
+        w["banner_title"] = tk.Label(header_frame, text="🎭  " + self.t("persona_dialog_title"),
+                                     font=("Segoe UI", 12, "bold"), bg=c["accent"], fg="white", anchor="w")
+        w["banner_title"].pack(fill="x")
+
+        body = tk.Frame(win, bg=c["bg"], padx=14, pady=12)
+        body.pack(fill="both", expand=True)
+        w["body"] = body
+
+        left_pane = tk.Frame(body, bg=c["bg"], width=230)
+        left_pane.pack(side="left", fill="y", padx=(0, 12))
+        w["left_pane"] = left_pane
+
+        w["list_label"] = tk.Label(left_pane, text=self.t("persona_menu_title"),
+                                   font=("Segoe UI", 10, "bold"), bg=c["bg"], fg=c["text"], anchor="w")
+        w["list_label"].pack(fill="x", pady=(0, 6))
+
+        list_scroll = tk.Scrollbar(left_pane, orient="vertical")
+        w["persona_list"] = tk.Listbox(left_pane, yscrollcommand=list_scroll.set,
+                                       font=("Segoe UI", 9), activestyle="none", relief="flat", bd=0)
+        list_scroll.configure(command=w["persona_list"].yview)
+        list_scroll.pack(side="right", fill="y")
+        w["persona_list"].pack(side="left", fill="both", expand=True)
+        w["persona_list"].bind("<<ListboxSelect>>", self.on_persona_select)
+
+        right_pane = tk.Frame(body, bg=c["bg"])
+        right_pane.pack(side="right", fill="both", expand=True)
+        w["right_pane"] = right_pane
+
+        name_row = tk.Frame(right_pane, bg=c["bg"])
+        name_row.pack(fill="x", pady=(0, 6))
+        w["name_label"] = tk.Label(name_row, text=self.t("persona_name_label"),
+                                   font=("Segoe UI", 9, "bold"), bg=c["bg"], fg=c["text"])
+        w["name_label"].pack(side="left")
+        w["badge"] = tk.Label(name_row, font=("Segoe UI", 8, "bold"), bg=c["panel"], fg=c["accent"],
+                              padx=8, pady=2)
+        w["badge"].pack(side="right")
+
+        w["name_entry"] = tk.Entry(right_pane, font=("Segoe UI", 10), relief="flat", bd=1)
+        w["name_entry"].pack(fill="x", pady=(0, 10))
+
+        w["desc_label"] = tk.Label(right_pane, text=self.t("persona_desc_label"),
+                                   font=("Segoe UI", 9, "bold"), bg=c["bg"], fg=c["text"], anchor="w")
+        w["desc_label"].pack(fill="x", pady=(0, 2))
+        w["desc_entry"] = tk.Entry(right_pane, font=("Segoe UI", 9), relief="flat", bd=1)
+        w["desc_entry"].pack(fill="x", pady=(0, 10))
+
+        w["temp_label"] = tk.Label(right_pane, font=("Segoe UI", 9, "bold"),
+                                   bg=c["bg"], fg=c["text"], anchor="w")
+        w["temp_label"].pack(fill="x", pady=(0, 2))
+        w["temp_scale"] = tk.Scale(right_pane, from_=0.0, to=1.5, resolution=0.05,
+                                   orient="horizontal", showvalue=False, length=260,
+                                   highlightthickness=0, bd=0, command=self.on_persona_temp_slider)
+        w["temp_scale"].pack(fill="x", pady=(0, 10))
+
+        w["prompt_label"] = tk.Label(right_pane, text=self.t("persona_prompt_label"),
+                                     font=("Segoe UI", 9, "bold"), bg=c["bg"], fg=c["text"], anchor="w")
+        w["prompt_label"].pack(fill="x", pady=(0, 2))
+        w["prompt_text"] = tk.Text(right_pane, height=6, wrap="word", font=("Segoe UI", 9),
+                                   relief="flat", bd=1, padx=6, pady=6)
+        w["prompt_text"].pack(fill="both", expand=True, pady=(0, 12))
+
+        btn_bar = tk.Frame(win, bg=c["bg"], padx=14, pady=10)
+        btn_bar.pack(fill="x")
+        w["btn_bar"] = btn_bar
+
+        w["new_btn"] = Button(btn_bar, text=self.t("persona_new_btn"), command=self.on_persona_new,
+                              relief="flat", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        w["new_btn"].pack(side="left", padx=(0, 6))
+
+        w["save_btn"] = Button(btn_bar, text=self.t("persona_save_btn"), command=self.on_persona_save,
+                               relief="flat", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        w["save_btn"].pack(side="left", padx=(0, 6))
+
+        w["delete_btn"] = Button(btn_bar, text=self.t("persona_delete_btn"), command=self.on_persona_delete,
+                                 relief="flat", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        w["delete_btn"].pack(side="left", padx=(0, 6))
+
+        w["close_btn"] = Button(btn_bar, text=self.t("voice_close_btn"), command=self.close_persona_manager,
+                                relief="flat", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        w["close_btn"].pack(side="right")
+
+        self.refresh_persona_list()
+        self.update_persona_window()
+
+    def close_persona_manager(self):
+        if self.persona_win is not None:
+            try:
+                self.persona_win.destroy()
+            except Exception:
+                pass
+        self.persona_win = None
+        self.pw = {}
+
+    def refresh_persona_list(self, select_id=None):
+        if not self.pw or "persona_list" not in self.pw:
+            return
+        lb = self.pw["persona_list"]
+        lb.delete(0, "end")
+        personas = self.get_persona_manager().all()
+        target_idx = 0
+        curr_p = self.current_persona()
+        select_id = select_id or curr_p.id
+
+        for idx, p in enumerate(personas):
+            badge = "🔒" if p.is_builtin else "✨"
+            lb.insert("end", f" {p.icon} {p.name} [{badge}]")
+            if p.id == select_id:
+                target_idx = idx
+
+        lb.selection_clear(0, "end")
+        lb.selection_set(target_idx)
+        self.load_persona_into_form(personas[target_idx])
+
+    def on_persona_select(self, _event=None):
+        lb = self.pw.get("persona_list")
+        if not lb:
+            return
+        sel = lb.curselection()
+        if not sel:
+            return
+        personas = self.get_persona_manager().all()
+        idx = sel[0]
+        if 0 <= idx < len(personas):
+            self.load_persona_into_form(personas[idx])
+
+    def load_persona_into_form(self, persona):
+        w = self.pw
+        if not w:
+            return
+        w["selected_persona_id"] = persona.id
+        w["is_builtin"] = persona.is_builtin
+
+        w["name_entry"].configure(state="normal")
+        w["name_entry"].delete(0, "end")
+        w["name_entry"].insert(0, persona.name)
+        w["name_entry"].configure(state="disabled" if persona.is_builtin else "normal")
+
+        badge_text = self.t("persona_builtin_badge") if persona.is_builtin else self.t("persona_custom_badge")
+        w["badge"].configure(text=badge_text)
+
+        w["desc_entry"].configure(state="normal")
+        w["desc_entry"].delete(0, "end")
+        w["desc_entry"].insert(0, persona.description)
+        w["desc_entry"].configure(state="disabled" if persona.is_builtin else "normal")
+
+        w["temp_scale"].configure(state="normal")
+        w["temp_scale"].set(persona.temperature)
+        w["temp_scale"].configure(state="disabled" if persona.is_builtin else "normal")
+        self.on_persona_temp_slider(persona.temperature)
+
+        w["prompt_text"].configure(state="normal")
+        w["prompt_text"].delete("1.0", "end")
+        w["prompt_text"].insert("1.0", persona.system_prompt)
+        w["prompt_text"].configure(state="disabled" if persona.is_builtin else "normal")
+
+        save_state = "disabled" if persona.is_builtin else "normal"
+        delete_state = "disabled" if persona.is_builtin else "normal"
+        w["save_btn"].configure(state=save_state)
+        w["delete_btn"].configure(state=delete_state)
+
+    def on_persona_temp_slider(self, val):
+        w = self.pw
+        if not w or "temp_label" not in w:
+            return
+        try:
+            f_val = float(val)
+        except (ValueError, TypeError):
+            f_val = 0.6
+        tip = ""
+        if f_val <= 0.3:
+            tip = " (Deterministic / Coding)"
+        elif f_val <= 0.7:
+            tip = " (Balanced)"
+        else:
+            tip = " (Creative / Storytelling)"
+        w["temp_label"].configure(text=self.t("persona_temp_label", val=f"{f_val:.2f}") + tip)
+
+    def on_persona_new(self):
+        w = self.pw
+        if not w:
+            return
+        w["selected_persona_id"] = None
+        w["is_builtin"] = False
+
+        w["persona_list"].selection_clear(0, "end")
+        w["badge"].configure(text=self.t("persona_custom_badge"))
+
+        w["name_entry"].configure(state="normal")
+        w["name_entry"].delete(0, "end")
+        w["name_entry"].focus_set()
+
+        w["desc_entry"].configure(state="normal")
+        w["desc_entry"].delete(0, "end")
+
+        w["temp_scale"].configure(state="normal")
+        w["temp_scale"].set(0.6)
+        self.on_persona_temp_slider(0.6)
+
+        w["prompt_text"].configure(state="normal")
+        w["prompt_text"].delete("1.0", "end")
+
+        w["save_btn"].configure(state="normal")
+        w["delete_btn"].configure(state="disabled")
+
+    def on_persona_save(self):
+        w = self.pw
+        if not w:
+            return
+        name = w["name_entry"].get().strip()
+        if not name:
+            messagebox.showwarning(self.t("persona_dialog_title"), self.t("persona_validation_name"))
+            w["name_entry"].focus_set()
+            return
+
+        desc = w["desc_entry"].get().strip()
+        temp = float(w["temp_scale"].get())
+        prompt = w["prompt_text"].get("1.0", "end").strip()
+        if not prompt:
+            messagebox.showwarning(self.t("persona_dialog_title"), self.t("persona_validation_prompt"))
+            w["prompt_text"].focus_set()
+            return
+
+        persona_id = w.get("selected_persona_id")
+        mgr = self.get_persona_manager()
+        if persona_id:
+            try:
+                p = mgr.update_custom(
+                    persona_id, name=name, description=desc,
+                    system_prompt=prompt, temperature=temp
+                )
+                self.refresh_persona_list(select_id=p.id)
+                self.update_persona_button()
+            except Exception as e:
+                messagebox.showerror(self.t("persona_dialog_title"), str(e))
+        else:
+            try:
+                p = mgr.add_custom(
+                    name=name, description=desc,
+                    system_prompt=prompt, temperature=temp
+                )
+                self.refresh_persona_list(select_id=p.id)
+                self.set_chat_persona(p.id)
+            except Exception as e:
+                messagebox.showerror(self.t("persona_dialog_title"), str(e))
+
+    def on_persona_delete(self):
+        w = self.pw
+        if not w:
+            return
+        persona_id = w.get("selected_persona_id")
+        if not persona_id or w.get("is_builtin"):
+            return
+
+        mgr = self.get_persona_manager()
+        p = mgr.get(persona_id)
+        if not messagebox.askyesno(
+            self.t("persona_dialog_title"),
+            self.t("persona_delete_confirm", name=p.name)
+        ):
+            return
+
+        mgr.delete_custom(persona_id)
+        chat = self.current_chat()
+        if chat and chat.get("persona") == persona_id:
+            chat["persona"] = "default"
+            self.save_history()
+        if self.default_persona_id == persona_id:
+            self.default_persona_id = "default"
+            self.save_settings()
+
+        self.update_persona_button()
+        self.refresh_persona_list(select_id="default")
+
+    def update_persona_window(self):
+        if self.persona_win is None or not self.pw:
+            return
+        w, c = self.pw, self.colors
+        w["win"].title(self.t("persona_dialog_title"))
+        w["win"].configure(bg=c["bg"])
+        w["banner_title"].configure(text="🎭  " + self.t("persona_dialog_title"), bg=c["accent"])
+        w["body"].configure(bg=c["bg"])
+        w["left_pane"].configure(bg=c["bg"])
+        w["right_pane"].configure(bg=c["bg"])
+        w["btn_bar"].configure(bg=c["bg"])
+
+        w["list_label"].configure(text=self.t("persona_menu_title"), bg=c["bg"], fg=c["text"])
+        w["persona_list"].configure(bg=c["sidebar"], fg=c["text"], selectbackground=c["accent"],
+                                    selectforeground="white")
+
+        w["name_label"].configure(text=self.t("persona_name_label"), bg=c["bg"], fg=c["text"])
+        w["badge"].configure(bg=c["panel"], fg=c["accent"])
+        w["name_entry"].configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"])
+
+        w["desc_label"].configure(text=self.t("persona_desc_label"), bg=c["bg"], fg=c["text"])
+        w["desc_entry"].configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"])
+
+        w["temp_label"].configure(bg=c["bg"], fg=c["text"])
+        w["temp_scale"].configure(bg=c["bg"], fg=c["text"], troughcolor=c["border"],
+                                  activebackground=c["accent2"])
+
+        w["prompt_label"].configure(text=self.t("persona_prompt_label"), bg=c["bg"], fg=c["text"])
+        w["prompt_text"].configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"])
+
+        w["new_btn"].configure(text=self.t("persona_new_btn"), bg=c["accent"], fg="white",
+                               activebackground=c["accent2"], activeforeground="white", cursor="hand2")
+        w["save_btn"].configure(text=self.t("persona_save_btn"), bg=c["accent"], fg="white",
+                                activebackground=c["accent2"], activeforeground="white", cursor="hand2")
+        w["delete_btn"].configure(text=self.t("persona_delete_btn"), bg=c["danger"], fg=c["accent2"],
+                                  activebackground=c["danger"], activeforeground=c["text"], cursor="hand2")
+        w["close_btn"].configure(text=self.t("voice_close_btn"), bg=c["border"], fg=c["text"],
+                                 activebackground=c["border"], activeforeground=c["text"], cursor="hand2")
 
     def refresh_history_list(self):
         selected = self.current_id
@@ -824,8 +1262,14 @@ class JugnuApp:
                     break
 
     def make_draft(self):
-        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": []}
+        self.draft_chat = {
+            "id": str(uuid.uuid4()),
+            "title": "New Chat",
+            "messages": [],
+            "persona": getattr(self, "default_persona_id", "default"),
+        }
         self.current_id = self.draft_chat["id"]
+        self.update_persona_button()
 
     def new_chat(self):
         # A blank chat is temporary. It must not create a history entry until a message is sent.
@@ -991,6 +1435,7 @@ class JugnuApp:
         self.bubble_items.clear()
         for child in self.messages_frame.winfo_children():
             child.destroy()
+        self.update_persona_button()
         chat = self.current_chat()
         messages = chat.get("messages", []) if chat else []
         if not messages:
@@ -1008,12 +1453,13 @@ class JugnuApp:
 
         image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jugnu_bot.png")
         try:
-            self.welcome_photo = tk.PhotoImage(file=image_path)
-            # Keep it compact in the chat viewport.
-            factor = max(1, int(max(self.welcome_photo.width() / 360,
-                                    self.welcome_photo.height() / 260)))
-            if factor > 1:
-                self.welcome_photo = self.welcome_photo.subsample(factor, factor)
+            if not getattr(self, "welcome_photo", None):
+                photo = tk.PhotoImage(file=image_path)
+                # Keep it compact in the chat viewport.
+                factor = max(1, int(max(photo.width() / 360, photo.height() / 260)))
+                if factor > 1:
+                    photo = photo.subsample(factor, factor)
+                self.welcome_photo = photo
             tk.Label(wrapper, image=self.welcome_photo, bg=c["bg"]).pack(pady=(0, 10))
         except (tk.TclError, OSError):
             # Friendly fallback if the companion image hasn't been copied beside the script.
@@ -1431,9 +1877,12 @@ class JugnuApp:
                 m for m in chat.get("messages", [])
                 if not (m["role"] == "assistant" and m.get("is_error") is True)
             ][-10:]
+            persona_id = (chat.get("persona") if chat else None) or getattr(self, "default_persona_id", "default")
+            mgr = getattr(self, "persona_manager", None) or get_default_manager()
+            persona = mgr.get(persona_id)
             messages = [{
                 "role": "system",
-                "content": build_system_prompt(language, local_datetime_text())
+                "content": build_system_prompt(language, local_datetime_text(), persona_prompt=persona.system_prompt)
             }]
             messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
             response = requests.post(OLLAMA_URL, json={
@@ -1441,7 +1890,7 @@ class JugnuApp:
                 "messages": messages,
                 "stream": False,
                 "keep_alive": "10m",
-                "options": {"num_predict": 256, "temperature": 0.6}
+                "options": {"num_predict": 256, "temperature": persona.temperature}
             }, timeout=180)
             response.raise_for_status()
             answer = ollama_answer(response.json())

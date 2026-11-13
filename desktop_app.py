@@ -1,5 +1,17 @@
+import os
+import sys
+
+# On Windows, ensure Tcl/Tk library paths use forward slashes so Tcl can locate init.tcl
+if sys.platform == "win32":
+    tcl_dir = os.path.join(sys.prefix, "tcl", "tcl8.6").replace("\\", "/")
+    tk_dir = os.path.join(sys.prefix, "tcl", "tk8.6").replace("\\", "/")
+    if os.path.isdir(tcl_dir) and "TCL_LIBRARY" not in os.environ:
+        os.environ["TCL_LIBRARY"] = tcl_dir
+    if os.path.isdir(tk_dir) and "TK_LIBRARY" not in os.environ:
+        os.environ["TK_LIBRARY"] = tk_dir
+
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from tkinter import font as tkfont
 import math
 from datetime import datetime
@@ -18,10 +30,19 @@ from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, cl
 from assistant import calculate, is_time_question as detect_time_question
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import render_markdown, plain_text
+from models import (
+    DEFAULT_MODEL,
+    RECOMMENDED_MODELS,
+    ModelInfo,
+    fetch_local_models,
+    format_bytes,
+    pull_model_stream,
+    resolve_active_model,
+)
 
 APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2:3b"
+MODEL = DEFAULT_MODEL
 HISTORY_FILE = "jugnu_history.json"
 SETTINGS_FILE = "jugnu_settings.json"
 MAX_LIST_TITLE = 34    # longer chat titles are shortened with "…" in the sidebar list
@@ -154,6 +175,11 @@ class JugnuApp:
         self.vw = {}           # its widgets, so theme and language changes can update them
         self.voice_enabled = self.load_voice_setting()
         self.language = self.load_language_setting()
+        self.available_models = []
+        self.current_model = self.load_model_setting()
+        self.pull_win = None
+        self.pull_widgets = {}
+        self.is_pulling = False
         self._status = ("status_ready", {})  # Remembered so the status line can be re-translated.
         self.read_buttons = []  # "Read aloud" buttons currently on screen
         self.stop_shown = False  # is the header Stop button visible?
@@ -334,12 +360,26 @@ class JugnuApp:
         except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
             return normalize_language(None)
 
+    def load_model_setting(self):
+        # Defaults to DEFAULT_MODEL if missing, invalid, or corrupted.
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    model_name = data.get("default_model")
+                    if isinstance(model_name, str) and model_name.strip():
+                        return model_name.strip()
+        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+            pass
+        return DEFAULT_MODEL
+
     def save_settings(self):
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump({"dark_mode": self.dark_mode, "voice_enabled": self.voice_enabled,
                            "language": self.language, "voice_rate": self.voice_rate,
-                           "voice_volume": self.voice_volume, "voice_id": self.voice_id}, f)
+                           "voice_volume": self.voice_volume, "voice_id": self.voice_id,
+                           "default_model": getattr(self, "current_model", DEFAULT_MODEL)}, f)
         except OSError:
             pass
 
@@ -387,6 +427,9 @@ class JugnuApp:
         self.voice_settings_btn.pack(fill="x", padx=12, pady=(0, 8))
         if not self.tts.available:
             self.voice_settings_btn.configure(state="disabled")
+        self.model_sidebar_btn = Button(self.sidebar, command=self.open_pull_dialog,
+                                        relief="flat", pady=10)
+        self.model_sidebar_btn.pack(fill="x", padx=12, pady=(0, 8))
         self.language_btn = Button(self.sidebar, command=self.toggle_language,
                                       relief="flat", pady=10)
         self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
@@ -409,6 +452,9 @@ class JugnuApp:
         # Shown only while speech is playing (see poll_speech); packed after status, so it sits left of it.
         self.stop_btn = Button(self.header, text="⏹  Stop", command=self.stop_speaking,
                                   relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.model_btn = Button(self.header, command=self.show_model_menu,
+                                relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.model_btn.pack(side="right", padx=(0, 10))
 
         self.chat_area = tk.Frame(self.content)
         self.chat_area.pack(fill="both", expand=True, padx=12, pady=12)
@@ -584,6 +630,13 @@ class JugnuApp:
                     self.voice_settings_btn]:
             btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
                           activeforeground="white", cursor="hand2")
+        if hasattr(self, "model_btn"):
+            self.model_btn.configure(bg=c["accent2"], fg="white", activebackground=c["accent"],
+                                     activeforeground="white", cursor="hand2")
+        if hasattr(self, "model_sidebar_btn"):
+            self.model_sidebar_btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
+                                             activeforeground="white", cursor="hand2")
+        self.update_pull_window()
         self.voice_btn.configure(text=self.voice_button_text())
         self.clear_btn.configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
                                  activeforeground=c["text"], cursor="hand2")
@@ -769,6 +822,290 @@ class JugnuApp:
         self.voice_win = None
         self.vw = {}
 
+    # ---------- Model management & discovery ----------
+    def update_model_button_text(self):
+        if not hasattr(self, "model_btn"):
+            return
+        current = getattr(self, "current_model", DEFAULT_MODEL)
+        self.model_btn.configure(text=self.t("model_btn", name=current) + " ▾")
+
+    def show_model_menu(self):
+        c = self.colors
+        menu = tk.Menu(self.root, tearoff=0, bg=c["panel"], fg=c["text"],
+                       activebackground=c["accent"], activeforeground="white")
+        menu.add_command(label=f"  {self.t('model_menu_title')}", state="disabled")
+        menu.add_separator()
+
+        active = getattr(self, "current_model", DEFAULT_MODEL)
+        models_list = getattr(self, "available_models", [])
+
+        if models_list:
+            for m in models_list:
+                name = m.name if isinstance(m, ModelInfo) else str(m)
+                label = m.display_name if isinstance(m, ModelInfo) else name
+                prefix = "✓ " if name == active else "    "
+                menu.add_command(
+                    label=f"{prefix}{label}",
+                    command=lambda n=name: self.switch_model(n),
+                )
+        else:
+            menu.add_command(label=f"    {self.t('model_no_models_found')}", state="disabled")
+
+        menu.add_separator()
+        menu.add_command(label=self.t("model_menu_refresh"), command=self.refresh_models)
+        menu.add_command(label=self.t("model_menu_pull"), command=self.open_pull_dialog)
+
+        try:
+            x = self.model_btn.winfo_rootx()
+            y = self.model_btn.winfo_rooty() + self.model_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def refresh_models(self):
+        def task():
+            models_list = fetch_local_models()
+            def update():
+                self.available_models = models_list
+                if models_list:
+                    resolved = resolve_active_model(getattr(self, "current_model", None), models_list)
+                    if resolved != getattr(self, "current_model", None):
+                        self.current_model = resolved
+                        self.save_settings()
+                self.update_model_button_text()
+            self.root.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    def switch_model(self, model_name):
+        self.current_model = model_name
+        active_chat = self.current_chat()
+        if active_chat:
+            active_chat["model"] = model_name
+            if active_chat in getattr(self, "chats", []):
+                self.save_history()
+        self.save_settings()
+        self.update_model_button_text()
+        self.set_status("model_status_switching", name=model_name)
+        def preload():
+            try:
+                requests.post(OLLAMA_URL, json={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "Reply with OK."}],
+                    "stream": False,
+                    "keep_alive": "10m",
+                    "options": {"num_predict": 3},
+                }, timeout=30)
+                self.root.after(0, lambda: self.set_status("status_ready"))
+            except requests.RequestException:
+                self.root.after(0, lambda: self.set_status("status_ready"))
+        threading.Thread(target=preload, daemon=True).start()
+
+    def open_pull_dialog(self):
+        if self.pull_win is not None and self.pull_win.winfo_exists():
+            self.pull_win.lift()
+            self.pull_win.focus_set()
+            return
+
+        c = self.colors
+        win = tk.Toplevel(self.root)
+        self.pull_win = win
+        win.title(self.t("model_pull_title"))
+        win.geometry("520x460")
+        win.minsize(480, 420)
+        win.configure(bg=c["bg"])
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", self.close_pull_dialog)
+
+        # Center relative to root if root is visible
+        try:
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+            pos_x = max(0, root_x + (root_w - 520) // 2)
+            pos_y = max(0, root_y + (root_h - 460) // 2)
+            win.geometry(f"+{pos_x}+{pos_y}")
+        except Exception:
+            pass
+
+        w = self.pull_widgets
+        w["win"] = win
+
+        # Header Title
+        w["title"] = tk.Label(win, text=self.t("model_pull_title"), font=("Segoe UI", 14, "bold"),
+                              bg=c["bg"], fg=c["text"], anchor="w")
+        w["title"].pack(fill="x", padx=20, pady=(18, 4))
+
+        # Subtitle / prompt
+        w["prompt"] = tk.Label(win, text=self.t("model_pull_prompt"), font=("Segoe UI", 9),
+                               bg=c["bg"], fg=c["muted"], anchor="w", justify="left")
+        w["prompt"].pack(fill="x", padx=20, pady=(0, 12))
+
+        # Recommended models frame
+        w["rec_frame"] = tk.LabelFrame(win, text=f" {self.t('model_pull_recommended')} ",
+                                       font=("Segoe UI", 9, "bold"), bg=c["bg"], fg=c["text"],
+                                       padx=10, pady=8)
+        w["rec_frame"].pack(fill="x", padx=20, pady=(0, 12))
+
+        # Recommended combobox / dropdown
+        rec_choices = [f"{m['name']} — {m['desc']}" for m in RECOMMENDED_MODELS]
+        w["rec_var"] = tk.StringVar(value=rec_choices[0])
+        w["rec_combo"] = ttk.Combobox(w["rec_frame"], values=rec_choices,
+                                      textvariable=w["rec_var"], state="readonly", font=("Segoe UI", 9))
+        w["rec_combo"].pack(fill="x", pady=(2, 6))
+
+        def on_rec_selected(_event=None):
+            chosen = w["rec_var"].get().split(" — ")[0].strip()
+            w["entry"].delete(0, "end")
+            w["entry"].insert(0, chosen)
+
+        w["rec_combo"].bind("<<ComboboxSelected>>", on_rec_selected)
+
+        # Custom model entry
+        w["entry_label"] = tk.Label(win, text=self.t("model_pull_custom_label"), font=("Segoe UI", 9, "bold"),
+                                    bg=c["bg"], fg=c["text"], anchor="w")
+        w["entry_label"].pack(fill="x", padx=20, pady=(0, 4))
+
+        w["entry"] = tk.Entry(win, font=("Segoe UI", 10), bg=c["entry"], fg=c["text"],
+                              insertbackground=c["text"], relief="flat", highlightthickness=1,
+                              highlightbackground=c["border"], highlightcolor=c["accent"])
+        w["entry"].pack(fill="x", padx=20, pady=(0, 16), ipady=5)
+        w["entry"].insert(0, RECOMMENDED_MODELS[0]["name"])
+
+        # Progress bar
+        w["progress"] = ttk.Progressbar(win, orient="horizontal", mode="determinate", maximum=100)
+        w["progress"].pack(fill="x", padx=20, pady=(0, 6))
+
+        # Status text
+        w["status"] = tk.Label(win, text=self.t("model_pull_status_idle"), font=("Segoe UI", 9),
+                               bg=c["bg"], fg=c["muted"], anchor="w")
+        w["status"].pack(fill="x", padx=20, pady=(0, 16))
+
+        # Bottom buttons
+        btn_frame = tk.Frame(win, bg=c["bg"])
+        btn_frame.pack(fill="x", padx=20, pady=(0, 16), side="bottom")
+
+        w["pull_btn"] = Button(btn_frame, text=self.t("model_pull_start_btn"), command=self._start_pull,
+                               bg=c["accent"], fg="white", activebackground=c["accent2"],
+                               activeforeground="white", font=("Segoe UI", 9, "bold"),
+                               relief="flat", pady=8, padx=16, cursor="hand2")
+        w["pull_btn"].pack(side="left")
+
+        w["close_btn"] = Button(btn_frame, text=self.t("model_pull_close_btn"), command=self.close_pull_dialog,
+                                bg=c["panel"], fg=c["text"], activebackground=c["border"],
+                                activeforeground=c["text"], font=("Segoe UI", 9),
+                                relief="flat", pady=8, padx=16, cursor="hand2")
+        w["close_btn"].pack(side="right")
+
+    def update_pull_window(self):
+        if getattr(self, "pull_win", None) is None or not self.pull_win.winfo_exists():
+            return
+        w, c = self.pull_widgets, self.colors
+        w["win"].title(self.t("model_pull_title"))
+        w["win"].configure(bg=c["bg"])
+        w["title"].configure(text=self.t("model_pull_title"), bg=c["bg"], fg=c["text"])
+        w["prompt"].configure(text=self.t("model_pull_prompt"), bg=c["bg"], fg=c["muted"])
+        w["rec_frame"].configure(text=f" {self.t('model_pull_recommended')} ", bg=c["bg"], fg=c["text"])
+        w["entry_label"].configure(text=self.t("model_pull_custom_label"), bg=c["bg"], fg=c["text"])
+        w["entry"].configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"],
+                             highlightbackground=c["border"], highlightcolor=c["accent"])
+        w["status"].configure(bg=c["bg"])
+        w["pull_btn"].configure(bg=c["accent"], fg="white", activebackground=c["accent2"])
+        w["close_btn"].configure(bg=c["panel"], fg=c["text"], text=self.t("model_pull_close_btn"))
+
+    def close_pull_dialog(self):
+        if getattr(self, "is_pulling", False):
+            if not messagebox.askyesno(
+                self.t("model_pull_title"),
+                "A model download is in progress in the background. Close this dialog?",
+                parent=self.pull_win
+            ):
+                return
+        if getattr(self, "pull_win", None) is not None:
+            self.pull_win.destroy()
+        self.pull_win = None
+        self.pull_widgets = {}
+
+    def _start_pull(self):
+        w = self.pull_widgets
+        model_name = w["entry"].get().strip() if "entry" in w else ""
+        if not model_name:
+            messagebox.showwarning(
+                self.t("model_pull_title"),
+                self.t("model_pull_empty_name"),
+                parent=self.pull_win
+            )
+            return
+
+        self.is_pulling = True
+        w["pull_btn"].configure(state="disabled")
+        w["progress"]["value"] = 0
+        w["status"].configure(text=f"Connecting to Ollama to pull '{model_name}'...", fg=self.colors["muted"])
+
+        def task():
+            try:
+                for chunk in pull_model_stream(model_name):
+                    if not getattr(self, "is_pulling", False):
+                        break
+                    if "error" in chunk:
+                        raise ValueError(chunk["error"])
+                    total = chunk.get("total", 0)
+                    completed = chunk.get("completed", 0)
+                    status_text = chunk.get("status", "")
+                    if total > 0:
+                        pct = min(100, max(0, int((completed / total) * 100)))
+                        mb = f"{format_bytes(completed)} / {format_bytes(total)}"
+                        self.root.after(0, lambda p=pct, s=status_text, m=mb, n=model_name: self._update_pull_progress(p, s, m, n))
+                    elif status_text:
+                        self.root.after(0, lambda s=status_text: self._update_pull_status_text(s))
+                self.root.after(0, lambda n=model_name: self._on_pull_success(n))
+            except Exception as exc:
+                self.root.after(0, lambda e=str(exc): self._on_pull_error(e))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _update_pull_progress(self, percent, status_text, mb_text, model_name):
+        w = self.pull_widgets
+        if "progress" in w and getattr(self, "pull_win", None) and self.pull_win.winfo_exists():
+            w["progress"]["value"] = percent
+            w["status"].configure(
+                text=self.t("model_pull_status_downloading", model=model_name, percent=percent, mb=mb_text),
+                fg=self.colors["text"]
+            )
+
+    def _update_pull_status_text(self, status_text):
+        w = self.pull_widgets
+        if "status" in w and getattr(self, "pull_win", None) and self.pull_win.winfo_exists():
+            w["status"].configure(text=status_text, fg=self.colors["muted"])
+
+    def _on_pull_success(self, model_name):
+        self.is_pulling = False
+        w = self.pull_widgets
+        if getattr(self, "pull_win", None) and self.pull_win.winfo_exists():
+            if "progress" in w:
+                w["progress"]["value"] = 100
+            if "status" in w:
+                w["status"].configure(
+                    text=self.t("model_pull_status_success", model=model_name),
+                    fg="#10B981"
+                )
+            if "pull_btn" in w:
+                w["pull_btn"].configure(state="normal")
+        self.refresh_models()
+        self.switch_model(model_name)
+
+    def _on_pull_error(self, err_msg):
+        self.is_pulling = False
+        w = self.pull_widgets
+        if getattr(self, "pull_win", None) and self.pull_win.winfo_exists():
+            if "status" in w:
+                w["status"].configure(
+                    text=self.t("model_pull_status_error", error=err_msg),
+                    fg="#EF4444"
+                )
+            if "pull_btn" in w:
+                w["pull_btn"].configure(state="normal")
+
     def on_close(self):
         if self._resize_timer:
             try:
@@ -802,6 +1139,10 @@ class JugnuApp:
         self.voice_btn.configure(text=self.voice_button_text())
         self.voice_settings_btn.configure(text=self.t("voice_settings_btn"))
         self.update_voice_window()
+        if hasattr(self, "model_sidebar_btn"):
+            self.model_sidebar_btn.configure(text=self.t("model_menu_pull"))
+        self.update_model_button_text()
+        self.update_pull_window()
         self.language_btn.configure(text=self.t("language_btn", name=self.t("language_name")))
         self.theme_btn.configure(text=self.theme_button_text())
         self.header_title.configure(text=self.t("header_title"))
@@ -824,7 +1165,12 @@ class JugnuApp:
                     break
 
     def make_draft(self):
-        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": []}
+        self.draft_chat = {
+            "id": str(uuid.uuid4()),
+            "title": "New Chat",
+            "model": getattr(self, "current_model", DEFAULT_MODEL),
+            "messages": [],
+        }
         self.current_id = self.draft_chat["id"]
 
     def new_chat(self):
@@ -852,6 +1198,10 @@ class JugnuApp:
             self.tts.stop()
             self.current_id = self.chats[index]["id"]
             self.draft_chat = None
+            chat_model = self.chats[index].get("model")
+            if chat_model and chat_model != getattr(self, "current_model", None):
+                self.current_model = chat_model
+                self.update_model_button_text()
             self.display_chat()
 
     # ---------- Rename / Delete a single chat (right-click on the history list) ----------
@@ -1307,8 +1657,17 @@ class JugnuApp:
     def warm_up(self):
         def task():
             try:
+                # Discover local models and auto-fallback if needed
+                installed = fetch_local_models()
+                if installed:
+                    self.available_models = installed
+                    active = resolve_active_model(getattr(self, "current_model", None), installed)
+                    self.current_model = active
+                    self.root.after(0, self.update_model_button_text)
+
+                target_model = getattr(self, "current_model", MODEL)
                 requests.post(OLLAMA_URL, json={
-                    "model": MODEL, "messages": [{"role": "user", "content": "Reply with OK."}],
+                    "model": target_model, "messages": [{"role": "user", "content": "Reply with OK."}],
                     "stream": False, "keep_alive": "10m",
                     "options": {"num_predict": 3}
                 }, timeout=90)
@@ -1436,8 +1795,9 @@ class JugnuApp:
                 "content": build_system_prompt(language, local_datetime_text())
             }]
             messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
+            chosen_model = chat.get("model") or getattr(self, "current_model", MODEL)
             response = requests.post(OLLAMA_URL, json={
-                "model": MODEL,
+                "model": chosen_model,
                 "messages": messages,
                 "stream": False,
                 "keep_alive": "10m",

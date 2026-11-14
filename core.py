@@ -21,6 +21,8 @@ from typing import Optional
 
 import requests
 
+from analytics import InferenceMetrics, parse_ollama_metrics
+
 # ---------------- CONFIGURATION ----------------
 
 MODEL = "llama3.2:3b"
@@ -216,6 +218,7 @@ class ChatResult:
     answer: str = ""
     error: Optional[str] = None  # None, or one of the ERROR_* kinds above
     detail: str = ""             # technical text for ERROR_OTHER
+    metrics: Optional[InferenceMetrics] = None
 
     @property
     def ok(self):
@@ -252,7 +255,9 @@ def chat(messages, *, timeout=120, keep_alive=None, options=None):
     try:
         response = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
         response.raise_for_status()
-        return ChatResult(answer=ollama_answer(response.json()))
+        data = response.json()
+        metrics = parse_ollama_metrics(data)
+        return ChatResult(answer=ollama_answer(data), metrics=metrics)
     except InvalidOllamaResponse:
         return ChatResult(error=ERROR_INVALID)
     except requests.Timeout:  # checked before ConnectionError: a connect timeout is both

@@ -68,6 +68,14 @@ STRINGS = {
         "export_success_title": "Export Successful",
         "export_success_msg": "Chat successfully exported to {path}",
         "export_error_msg": "Could not export chat: {error}",
+        # Analytics and HUD
+        "hud_dialog_title": "Inference Performance Details",
+        "hud_speed": "Generation Speed",
+        "hud_tokens": "Tokens Generated",
+        "hud_total_time": "Total Response Time",
+        "hud_ttft": "Time to First Token (TTFT)",
+        "hud_model": "Model",
+        "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -137,6 +145,14 @@ STRINGS = {
         "export_success_title": "Export Ho Gaya",
         "export_success_msg": "Chat safaltapoorvak {path} par export ho gayi",
         "export_error_msg": "Chat export nahi ho saki: {error}",
+        # Analytics and HUD
+        "hud_dialog_title": "Inference Performance Jankari",
+        "hud_speed": "Generation Speed",
+        "hud_tokens": "Tokens Generated",
+        "hud_total_time": "Kul Response Samay",
+        "hud_ttft": "Pahla Token Samay (TTFT)",
+        "hud_model": "Model",
+        "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",

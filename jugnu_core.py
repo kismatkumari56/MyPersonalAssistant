@@ -13,6 +13,7 @@ from datetime import datetime
 
 import requests
 
+from analytics import parse_ollama_metrics
 from strings import build_system_prompt, get_string, normalize_language
 from tts import DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
 from assistant import calculate, is_time_question
@@ -122,6 +123,8 @@ def load_history(path=HISTORY_FILE):
                     msg_dict["time"] = time_val.strip()
                 if role == "assistant" and message.get("is_error") is True:
                     msg_dict["is_error"] = True
+                if role == "assistant" and isinstance(message.get("metrics"), dict):
+                    msg_dict["metrics"] = message["metrics"]
 
                 valid_messages.append(msg_dict)
 
@@ -130,6 +133,8 @@ def load_history(path=HISTORY_FILE):
                 continue
 
             chat["messages"] = valid_messages
+            if chat.get("is_custom_title"):
+                chat["is_custom_title"] = True
             title = chat.get("title")
             chat["title"] = title.strip() if isinstance(title, str) and title.strip() else NEW_CHAT_TITLE
 
@@ -242,6 +247,10 @@ def load_language(path=SETTINGS_FILE):
     return normalize_language(_read_settings(path).get("language"))
 
 
+def load_performance_hud(path=SETTINGS_FILE):
+    return bool(_read_settings(path).get("show_performance_hud", True))
+
+
 def save_settings(path=SETTINGS_FILE, **settings):
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -332,6 +341,15 @@ def model_messages(chat, language):
     return messages
 
 
+class OllamaReply(tuple):
+    """Tuple (answer, is_error) that also carries optional metrics for telemetry."""
+
+    def __new__(cls, values, metrics=None):
+        instance = super().__new__(cls, values)
+        instance.metrics = metrics
+        return instance
+
+
 def ask_ollama(chat, language):
     """Ask the model for the next reply in `chat`. Blocks; returns (answer, is_error) and never raises."""
     try:
@@ -343,18 +361,20 @@ def ask_ollama(chat, language):
             "options": {"num_predict": 256, "temperature": 0.6}
         }, timeout=180)
         response.raise_for_status()
-        answer = ollama_answer(response.json())
+        data = response.json()
+        answer = ollama_answer(data)
         if not answer:
-            return get_string(language, "error_empty_reply"), True
-        return answer, False
+            return OllamaReply((get_string(language, "error_empty_reply"), True))
+        metrics = parse_ollama_metrics(data)
+        return OllamaReply((answer, False), metrics=metrics)
     except InvalidOllamaResponse:
-        return get_string(language, "error_invalid_response"), True
+        return OllamaReply((get_string(language, "error_invalid_response"), True))
     except requests.Timeout:
-        return get_string(language, "error_timeout"), True
+        return OllamaReply((get_string(language, "error_timeout"), True))
     except requests.ConnectionError:
-        return get_string(language, "error_connection"), True
+        return OllamaReply((get_string(language, "error_connection"), True))
     except (requests.RequestException, ValueError) as e:
-        return get_string(language, "error_generic", error=e), True
+        return OllamaReply((get_string(language, "error_generic", error=e), True))
 
 
 def warm_up():

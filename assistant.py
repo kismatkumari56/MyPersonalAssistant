@@ -17,11 +17,14 @@ from core import (
     is_time_question,
     local_now,
 )
+from analytics import SessionAnalytics
 from export_manager import export_chat
 from search_engine import SearchEngine
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
-__all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant"]
+__all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant", "session_analytics"]
+
+session_analytics = SessionAnalytics()
 
 # ---------------- CONFIGURATION ----------------
 
@@ -78,6 +81,8 @@ def ask_ai(user_message):
     result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
 
     if result.ok:
+        if result.metrics:
+            session_analytics.record(result.metrics)
         return result.answer
 
     if result.error == ERROR_CONNECTION:
@@ -117,8 +122,9 @@ def show_help():
     print("4. /search <query>       - Search across conversation history")
     print("5. /export [id] <format> - Export chat to md, html, json, or txt")
     print("6. /chats                - List all saved conversation history")
-    print("7. help                  - Show available commands")
-    print("8. bye                   - Exit the assistant")
+    print("7. /stats                - Show session inference performance analytics")
+    print("8. help                  - Show available commands")
+    print("9. bye                   - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -215,11 +221,28 @@ def run_assistant():
                     msg_count = len(c.get("messages", []))
                     print(f"{idx}. [{c.get('id')[:8]}] {c.get('title', 'New Chat')} ({msg_count} messages)")
 
+        # Performance analytics
+        elif command in ["/stats", "/analytics", "/metrics"]:
+            print(f"\nAssistant: {session_analytics.summary()}")
+
         # General AI question
         else:
             print("\nAssistant: ", end="", flush=True)
-            answer = ask_ai(user_input)
-            print(answer)
+            result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_input}]))
+            if result.ok:
+                if result.metrics:
+                    session_analytics.record(result.metrics)
+                print(result.answer)
+                if result.metrics and result.metrics.tps > 0:
+                    print(f"[{result.metrics.short_badge}]")
+            elif result.error == ERROR_CONNECTION:
+                print("I cannot connect to Ollama. Please make sure Ollama is running.")
+            elif result.error == ERROR_TIMEOUT:
+                print("The AI is taking too long to respond. Please try again.")
+            elif result.error == ERROR_INVALID:
+                print("An error occurred: Ollama returned an invalid response.")
+            else:
+                print(f"An error occurred: {result.detail}")
 
 
 # ---------------- START ----------------

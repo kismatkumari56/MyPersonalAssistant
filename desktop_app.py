@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QScrollArea, QSizePolicy, QSlider, QTextBrowser, QVBoxLayout,
                                QWidget)
 
+import uuid
+
 import jugnu_core as core
+from conversation_tree import ConversationTree
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
@@ -112,9 +115,11 @@ class BubbleText(QTextBrowser):
 class Bubble(QFrame):
     """One chat message: name, time, Copy (and Read aloud for replies) above the text."""
 
-    def __init__(self, app, role, text, timestamp=None):
+    def __init__(self, app, role, text, timestamp=None, node_id=None, siblings_info=(0, 1, [])):
         super().__init__()
         self.app, self.text = app, text
+        self.node_id = node_id
+        self.siblings_info = siblings_info
         is_user = role == "user"
         self.setObjectName("bubble")
         self.setProperty("role", "user" if is_user else "assistant")
@@ -134,7 +139,47 @@ class Bubble(QFrame):
             self.time_label = QLabel(timestamp)
             self.time_label.setObjectName("bubbleTime")
             header.addWidget(self.time_label)
+
+        # Alternative Response Pagination: ◀ 1 / 2 ▶
+        curr_idx, total_siblings, _ = siblings_info
+        self.page_controls = []
+        if total_siblings > 1 and node_id:
+            header.addSpacing(6)
+            self.prev_btn = self.small_button("◀", lambda: app.switch_message_branch(app.current_id, node_id, curr_idx - 1))
+            self.prev_btn.setEnabled(curr_idx > 0)
+            self.prev_btn.setToolTip(app.t("branch_prev_tooltip"))
+            header.addWidget(self.prev_btn)
+
+            self.page_lbl = QLabel(f"{curr_idx + 1}/{total_siblings}")
+            self.page_lbl.setObjectName("bubbleTime")
+            header.addWidget(self.page_lbl)
+
+            self.next_btn = self.small_button("▶", lambda: app.switch_message_branch(app.current_id, node_id, curr_idx + 1))
+            self.next_btn.setEnabled(curr_idx < total_siblings - 1)
+            self.next_btn.setToolTip(app.t("branch_next_tooltip"))
+            header.addWidget(self.next_btn)
+            self.page_controls.extend([self.prev_btn, self.page_lbl, self.next_btn])
+
         header.addStretch(1)
+
+        # User bubble actions: Edit prompt
+        if is_user and node_id:
+            self.edit_btn = self.small_button("✏️", lambda: app.edit_user_message(node_id, text))
+            self.edit_btn.setToolTip(app.t("edit_prompt_tooltip"))
+            header.addWidget(self.edit_btn)
+
+        # Assistant bubble actions: Regenerate alternative response
+        if not is_user and node_id:
+            self.regen_btn = self.small_button("🔄", lambda: app.regenerate_response(node_id))
+            self.regen_btn.setToolTip(app.t("regen_tooltip"))
+            header.addWidget(self.regen_btn)
+
+        # Fork chat button for both roles
+        if node_id:
+            self.fork_btn = self.small_button("⑂", lambda: app.fork_chat_at_node(node_id))
+            self.fork_btn.setToolTip(app.t("fork_tooltip"))
+            header.addWidget(self.fork_btn)
+
         self.copy_btn = self.small_button(COPY_TEXT, self.copy_message)
         header.addWidget(self.copy_btn)
         self.read_btn = None
@@ -768,6 +813,27 @@ class JugnuWindow(QMainWindow):
         self.display_chat()
 
     # ---------- Messages ----------
+    def get_chat_tree(self, chat):
+        if not chat:
+            return ConversationTree()
+        messages = chat.get("messages", [])
+        if "tree" not in chat or not isinstance(chat["tree"], dict):
+            tree = ConversationTree.from_linear_messages(messages)
+            chat["tree"] = tree.to_dict()
+            return tree
+
+        tree = ConversationTree.from_dict(chat["tree"])
+        active_msgs = tree.get_active_messages()
+        # If messages array was directly mutated (e.g. in test fixtures or scripts), resync tree
+        if len(messages) != len(active_msgs) or any(
+            m.get("content") != am.get("content") or m.get("role") != am.get("role")
+            for m, am in zip(messages, active_msgs)
+        ):
+            tree = ConversationTree.from_linear_messages(messages)
+            chat["tree"] = tree.to_dict()
+
+        return tree
+
     def clear_messages(self):
         self.bubbles = []
         while self.messages_layout.count() > 1:  # keep the stretch at the end
@@ -779,11 +845,23 @@ class JugnuWindow(QMainWindow):
         self.clear_messages()
         self.refresh_history_list()
         chat = self.current_chat()
+        tree = self.get_chat_tree(chat) if chat else None
+        active_path = tree.get_active_path() if tree else []
         messages = chat.get("messages", []) if chat else []
         if not messages:
             self.show_welcome()
-        for msg in messages:
-            self.add_bubble(msg.get("role"), msg.get("content", ""), timestamp=msg.get("time"))
+        for idx, msg in enumerate(messages):
+            node_id = msg.get("node_id")
+            if not node_id and idx < len(active_path):
+                node_id = active_path[idx].id
+            siblings_info = tree.get_siblings(node_id) if (tree and node_id) else (0, 1, [])
+            self.add_bubble(
+                msg.get("role"),
+                msg.get("content", ""),
+                timestamp=msg.get("time"),
+                node_id=node_id,
+                siblings_info=siblings_info,
+            )
         self.scroll_to_bottom()
 
     def show_welcome(self):
@@ -805,10 +883,10 @@ class JugnuWindow(QMainWindow):
             layout.addWidget(widget, 0, Qt.AlignHCenter)
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, welcome)
 
-    def add_bubble(self, role, text, timestamp=None):
+    def add_bubble(self, role, text, timestamp=None, node_id=None, siblings_info=(0, 1, [])):
         if not self.bubbles and self.messages_layout.count() > 1:
             self.clear_messages()  # the first message replaces the welcome splash
-        bubble = Bubble(self, role, text, timestamp)
+        bubble = Bubble(self, role, text, timestamp, node_id=node_id, siblings_info=siblings_info)
         bubble.fit(max_bubble_width(self.scroll.viewport().width()))
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -867,9 +945,15 @@ class JugnuWindow(QMainWindow):
         if chat.get("title") == core.NEW_CHAT_TITLE:
             chat["title"] = user_text[:core.MAX_LIST_TITLE]
         time_now = core.message_time_text()
-        chat["messages"].append({"role": "user", "content": user_text, "time": time_now})
+        tree = self.get_chat_tree(chat)
+        active_path = tree.get_active_path()
+        parent_id = active_path[-1].id if active_path else None
+        user_node = tree.add_node("user", user_text, parent_id=parent_id, timestamp=time_now)
+        chat["tree"] = tree.to_dict()
+        chat["messages"] = tree.get_active_messages()
         self.input_box.clear()
-        self.add_bubble("user", user_text, timestamp=time_now)
+        siblings_info = tree.get_siblings(user_node.id)
+        self.add_bubble("user", user_text, timestamp=time_now, node_id=user_node.id, siblings_info=siblings_info)
         self.scroll_to_bottom()
         self.refresh_history_list()
         self.save_history()
@@ -880,9 +964,9 @@ class JugnuWindow(QMainWindow):
         # Clock/date and arithmetic questions are answered locally—no model call required.
         answer = core.local_answer(user_text, self.language)
         if answer is not None:
-            self.finish_answer(chat["id"], answer, False)
+            self.finish_answer(chat["id"], answer, False, parent_node_id=user_node.id)
             return
-        self.ask_ollama(chat["id"])
+        self.ask_ollama(chat["id"], parent_node_id=user_node.id)
 
     def create_streaming_bubble(self, chat_id, timestamp=None):
         if getattr(self, "current_id", None) != chat_id:
@@ -1113,34 +1197,154 @@ class JugnuWindow(QMainWindow):
         if hasattr(self, "refresh_history_list"):
             self.refresh_history_list()
 
-    def ask_ollama(self, chat_id):
+    def ask_ollama(self, chat_id, parent_node_id=None):
         # The worker gets a copy, so it never reads the list while the GUI changes it.
         chat = {"messages": [dict(m) for m in self.find_chat(chat_id)["messages"]]}
         language = self.language  # The prompt and any error text use the language chosen at send time.
-        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language)), self.on_answer)
+        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language), parent_node_id), self.on_answer)
 
     def on_answer(self, result):
         self.finish_answer(*result)
 
-    def finish_answer(self, chat_id, answer, is_error=False):
+    def finish_answer(self, chat_id, answer, is_error=False, parent_node_id=None):
         chat = self.find_chat(chat_id)  # may be gone if it was deleted while the request ran
         time_now = core.message_time_text()
         if chat and isinstance(answer, str) and answer.strip():
-            message = {"role": "assistant", "content": answer, "time": time_now}
-            if is_error:
-                message["is_error"] = True
-            chat["messages"].append(message)
+            tree = self.get_chat_tree(chat)
+            if parent_node_id is None:
+                active_path = tree.get_active_path()
+                parent_node_id = active_path[-1].id if active_path else None
+            new_node = tree.add_node("assistant", answer, parent_id=parent_node_id,
+                                     timestamp=time_now, is_error=is_error)
+            chat["tree"] = tree.to_dict()
+            chat["messages"] = tree.get_active_messages()
             self.save_history()
             # Only display if the user is still viewing the chat that received the answer.
             if chat_id == self.current_id:
-                self.add_bubble("assistant", answer, timestamp=time_now)
-                self.scroll_to_bottom()
+                siblings_info = tree.get_siblings(new_node.id)
+                if siblings_info[1] > 1:
+                    self.display_chat()
+                else:
+                    self.add_bubble("assistant", answer, timestamp=time_now,
+                                    node_id=new_node.id, siblings_info=siblings_info)
+                    self.scroll_to_bottom()
                 if self.voice_enabled:
                     self.tts.speak(plain_text(answer))
         self.busy = False
         self.send_btn.setEnabled(True)
         self.set_status("status_ready")
         self.refresh_history_list()
+
+    def switch_message_branch(self, chat_id, node_id, new_index):
+        chat = self.find_chat(chat_id)
+        if not chat:
+            return
+        tree = self.get_chat_tree(chat)
+        if tree.switch_branch(node_id, new_index):
+            chat["tree"] = tree.to_dict()
+            chat["messages"] = tree.get_active_messages()
+            self.save_history()
+            if chat_id == self.current_id:
+                self.display_chat()
+
+    def regenerate_response(self, node_id):
+        if self.busy:
+            return
+        chat = self.current_chat()
+        if not chat:
+            return
+        tree = self.get_chat_tree(chat)
+        target_node = tree.get_node(node_id)
+        if not target_node or not target_node.parent_id:
+            return
+        parent_id = target_node.parent_id
+        sub_tree = tree.fork_tree(parent_id)
+        sub_messages = sub_tree.get_active_messages()
+        if not sub_messages:
+            return
+
+        self.busy = True
+        self.send_btn.setEnabled(False)
+        self.set_status("status_thinking")
+
+        def work():
+            fake_chat = {"messages": sub_messages}
+            return (chat["id"], *core.ask_ollama(fake_chat, self.language), parent_id)
+
+        def on_regen_done(res):
+            self.finish_answer(*res)
+
+        self.start_task(work, on_regen_done)
+
+    def edit_user_message(self, node_id, original_text):
+        if self.busy:
+            return
+        chat = self.current_chat()
+        if not chat:
+            return
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(self.t("edit_dialog_title"))
+        dialog.setLabelText(self.t("edit_dialog_prompt"))
+        dialog.setTextValue(original_text)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        new_text = dialog.textValue().strip()
+        if not new_text or new_text == original_text:
+            return
+
+        tree = self.get_chat_tree(chat)
+        target_node = tree.get_node(node_id)
+        parent_id = target_node.parent_id if target_node else None
+
+        time_now = core.message_time_text()
+        user_node = tree.add_node("user", new_text, parent_id=parent_id, timestamp=time_now)
+        chat["tree"] = tree.to_dict()
+        chat["messages"] = tree.get_active_messages()
+        self.save_history()
+        self.display_chat()
+
+        local_ans = core.local_answer(new_text, self.language)
+        if local_ans is not None:
+            self.finish_answer(chat["id"], local_ans, False, user_node.id)
+            return
+
+        self.busy = True
+        self.send_btn.setEnabled(False)
+        self.set_status("status_thinking")
+        sub_tree = tree.fork_tree(user_node.id)
+        sub_messages = sub_tree.get_active_messages()
+
+        def work():
+            fake_chat = {"messages": sub_messages}
+            return (chat["id"], *core.ask_ollama(fake_chat, self.language), user_node.id)
+
+        def on_edit_done(res):
+            self.finish_answer(*res)
+
+        self.start_task(work, on_edit_done)
+
+    def fork_chat_at_node(self, node_id):
+        chat = self.current_chat()
+        if not chat:
+            return
+        tree = self.get_chat_tree(chat)
+        forked_tree = tree.fork_tree(node_id)
+        forked_messages = forked_tree.get_active_messages()
+        if not forked_messages:
+            return
+        base_title = chat.get("title", "Chat")
+        new_title = f"[Fork] {base_title}"[:core.MAX_LIST_TITLE]
+        new_chat = {
+            "id": str(uuid.uuid4()),
+            "title": new_title,
+            "messages": forked_messages,
+            "tree": forked_tree.to_dict(),
+        }
+        self.chats.append(new_chat)
+        self.current_id = new_chat["id"]
+        self.save_history()
+        self.refresh_history_list()
+        self.display_chat()
 
     def closeEvent(self, event):
         self.closed = True

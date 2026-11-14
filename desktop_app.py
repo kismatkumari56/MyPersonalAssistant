@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QWidget)
 
 import jugnu_core as core
+from command_palette import Command, CommandPaletteDialog, CommandRegistry, ShortcutsHelpDialog
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
@@ -314,6 +315,9 @@ class JugnuWindow(QMainWindow):
         self.tts = TTSManager(rate=self.voice_rate, volume=self.voice_volume,
                               voice_id=self.voice_id)  # Offline voice output; runs on its own thread.
         self.voice_dialog = None
+        self.palette_dialog = None
+        self.shortcuts_dialog = None
+        self.commands = CommandRegistry()
         self._status = ("status_ready", {})  # Remembered so the status line can be re-translated.
         self._mono = None
         self.bubbles = []
@@ -355,6 +359,7 @@ class JugnuWindow(QMainWindow):
         side.addWidget(QLabel("Just an Unusually Genius\nNeural Utility", objectName="tagline"))
         side.addSpacing(10)
         self.new_btn = self.sidebar_button(side, self.new_chat)
+        self.palette_btn = self.sidebar_button(side, self.open_command_palette)
         side.addSpacing(10)
         self.history_label = QLabel(objectName="historyLabel")
         side.addWidget(self.history_label)
@@ -430,6 +435,17 @@ class JugnuWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
         QShortcut(QKeySequence("Ctrl+F"), self, self.focus_search)
+        QShortcut(QKeySequence("Ctrl+K"), self, self.open_command_palette)
+        QShortcut(QKeySequence("Ctrl+D"), self, self.toggle_theme)
+        QShortcut(QKeySequence("Ctrl+L"), self, self.toggle_language)
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, self.toggle_voice)
+        QShortcut(QKeySequence("Ctrl+,"), self, self.open_voice_settings)
+        QShortcut(QKeySequence("Ctrl+Up"), self, self.navigate_previous_chat)
+        QShortcut(QKeySequence("Ctrl+Down"), self, self.navigate_next_chat)
+        QShortcut(QKeySequence("F1"), self, self.open_shortcuts_help)
+        QShortcut(QKeySequence("Ctrl+/"), self, self.open_shortcuts_help)
+        QShortcut(QKeySequence("Escape"), self, self.handle_escape)
+        QShortcut(QKeySequence("Ctrl+Q"), self, self.close)
 
     def focus_search(self):
         self.search_entry.setFocus()
@@ -437,6 +453,155 @@ class JugnuWindow(QMainWindow):
 
     def on_search_query_changed(self, _text):
         self.refresh_history_list()
+
+    def open_command_palette(self):
+        """Open the interactive command palette HUD modal."""
+        self.register_commands()
+        dialog = CommandPaletteDialog(self.commands, self)
+        self.palette_dialog = dialog
+        dialog.exec()
+
+    def open_shortcuts_help(self):
+        """Open the keyboard shortcuts cheat sheet dialog."""
+        dialog = ShortcutsHelpDialog(self, is_dark=self.dark_mode)
+        self.shortcuts_dialog = dialog
+        dialog.exec()
+
+    def register_commands(self):
+        """Populate the command registry with localized application commands."""
+        self.commands.clear()
+        self.commands.register(Command(
+            id="chat:new",
+            title=self.t("cmd_new_chat"),
+            category=self.t("cat_chat"),
+            shortcut="Ctrl+N",
+            callback=self.new_chat,
+            keywords=["new", "create", "start", "blank", "chat", "nayi"],
+            icon="➕",
+        ))
+        self.commands.register(Command(
+            id="chat:clear",
+            title=self.t("cmd_clear_chat"),
+            category=self.t("cat_chat"),
+            shortcut="Ctrl+Shift+Delete",
+            callback=self.clear_chat,
+            keywords=["clear", "delete", "empty", "remove", "saaf"],
+            icon="🗑️",
+        ))
+        self.commands.register(Command(
+            id="theme:toggle",
+            title=self.t("cmd_toggle_theme"),
+            category=self.t("cat_appearance"),
+            shortcut="Ctrl+D",
+            callback=self.toggle_theme,
+            keywords=["theme", "dark", "light", "mode", "color", "appearance"],
+            icon="🎨",
+        ))
+        self.commands.register(Command(
+            id="lang:toggle",
+            title=self.t("cmd_toggle_language"),
+            category=self.t("cat_settings"),
+            shortcut="Ctrl+L",
+            callback=self.toggle_language,
+            keywords=["language", "english", "hinglish", "switch", "translate", "bhasha"],
+            icon="🌐",
+        ))
+        self.commands.register(Command(
+            id="voice:toggle",
+            title=self.t("cmd_toggle_voice"),
+            category=self.t("cat_voice"),
+            shortcut="Ctrl+Shift+S",
+            callback=self.toggle_voice,
+            keywords=["voice", "speech", "mute", "unmute", "sound", "awaaz"],
+            icon="🔊",
+        ))
+        self.commands.register(Command(
+            id="voice:settings",
+            title=self.t("cmd_voice_settings"),
+            category=self.t("cat_voice"),
+            shortcut="Ctrl+,",
+            callback=self.open_voice_settings,
+            keywords=["voice", "settings", "rate", "speed", "volume"],
+            icon="⚙️",
+        ))
+        self.commands.register(Command(
+            id="nav:prev_chat",
+            title=self.t("cmd_prev_chat"),
+            category=self.t("cat_navigation"),
+            shortcut="Ctrl+Up",
+            callback=self.navigate_previous_chat,
+            keywords=["previous", "up", "back", "earlier", "pichli"],
+            icon="⬆️",
+        ))
+        self.commands.register(Command(
+            id="nav:next_chat",
+            title=self.t("cmd_next_chat"),
+            category=self.t("cat_navigation"),
+            shortcut="Ctrl+Down",
+            callback=self.navigate_next_chat,
+            keywords=["next", "down", "forward", "later", "agli"],
+            icon="⬇️",
+        ))
+        self.commands.register(Command(
+            id="help:shortcuts",
+            title=self.t("cmd_shortcuts_help"),
+            category=self.t("cat_help"),
+            shortcut="F1",
+            callback=self.open_shortcuts_help,
+            keywords=["shortcuts", "hotkeys", "keys", "help", "cheat sheet"],
+            icon="⌨️",
+        ))
+        self.commands.register(Command(
+            id="app:quit",
+            title=self.t("cmd_quit"),
+            category=self.t("cat_app"),
+            shortcut="Ctrl+Q",
+            callback=self.close,
+            keywords=["quit", "exit", "close", "bye", "band"],
+            icon="🚪",
+        ))
+
+    def navigate_previous_chat(self):
+        """Switch to previous conversation in the history list."""
+        count = self.history_list.count()
+        if count <= 1:
+            return
+        row = self.history_list.currentRow()
+        new_row = row - 1 if row > 0 else count - 1
+        item = self.history_list.item(new_row)
+        if item:
+            self.history_list.setCurrentItem(item)
+            self.select_chat(item)
+
+    def navigate_next_chat(self):
+        """Switch to next conversation in the history list."""
+        count = self.history_list.count()
+        if count <= 1:
+            return
+        row = self.history_list.currentRow()
+        new_row = row + 1 if row < count - 1 else 0
+        item = self.history_list.item(new_row)
+        if item:
+            self.history_list.setCurrentItem(item)
+            self.select_chat(item)
+
+    def handle_escape(self):
+        """Global escape key handler."""
+        if getattr(self, "palette_dialog", None) and self.palette_dialog.isVisible():
+            self.palette_dialog.reject()
+            return
+        if getattr(self, "shortcuts_dialog", None) and self.shortcuts_dialog.isVisible():
+            self.shortcuts_dialog.reject()
+            return
+        if getattr(self, "voice_dialog", None) and self.voice_dialog.isVisible():
+            self.voice_dialog.reject()
+            return
+        if self.tts.speaking:
+            self.stop_speaking()
+            return
+        if getattr(self, "is_streaming", False):
+            self.stop_generating()
+            return
 
     def sidebar_button(self, layout, slot):
         button = QPushButton()
@@ -506,6 +671,8 @@ class JugnuWindow(QMainWindow):
     def apply_language(self):
         # Set every piece of visible text from the strings dictionary.
         self.new_btn.setText(self.t("new_chat_btn"))
+        if hasattr(self, "palette_btn"):
+            self.palette_btn.setText(self.t("command_palette_btn"))
         self.history_label.setText(self.t("history_label"))
         self.search_entry.setPlaceholderText(self.t("search_placeholder"))
         self.clear_btn.setText(self.t("clear_chat_btn"))
@@ -515,6 +682,8 @@ class JugnuWindow(QMainWindow):
         self.theme_btn.setText(self.theme_button_text())
         self.header_title.setText(self.t("header_title"))
         self.send_btn.setText(self.t("send_btn"))
+        if hasattr(self, "commands"):
+            self.register_commands()
         if self.voice_dialog is not None:
             self.voice_dialog.retranslate()
         key, kwargs = self._status

@@ -258,3 +258,42 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;
     height: 0;
 }
+
+/* ---------- Command Palette & Shortcuts Dialog ---------- */
+QDialog#commandPalette, QDialog#shortcutsHelp {
+    background: #191728;
+    border: 1px solid #463A66;
+    border-radius: 12px;
+}
+QLineEdit#paletteSearch {
+    font-size: 13px;
+    padding: 10px 14px;
+    border: 1px solid #8B6CF0;
+    border-radius: 8px;
+    background: #2A2440;
+    color: #F4EEFF;
+}
+QListWidget#paletteList {
+    background: #211D35;
+    border: 1px solid #463A66;
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+}
+QListWidget#paletteList::item {
+    padding: 8px 12px;
+    border-radius: 6px;
+    color: #F4EEFF;
+    margin-bottom: 2px;
+}
+QListWidget#paletteList::item:selected {
+    background: #8B6CF0;
+    color: white;
+}
+QListWidget#paletteList::item:hover:!selected {
+    background: #2A2440;
+}
+QLabel#paletteFooter {
+    color: #B7A9D8;
+    font-size: 11px;
+}

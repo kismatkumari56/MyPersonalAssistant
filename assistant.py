@@ -4,6 +4,7 @@ Only the terminal screen lives here: the greeting, the commands, and the wording
 of the messages. Everything shared with the desktop app (the model, the clock, the
 calculator and the request to Ollama) comes from core.py.
 """
+import argparse
 from core import (
     ERROR_CONNECTION,
     ERROR_INVALID,
@@ -13,31 +14,12 @@ from core import (
     chat,
     is_time_question,
     local_now,
-import ast
-import datetime
-import json
-import operator
-import re
-import sys
-
-import requests
-
-# Optional conversational openers/closers so polite phrasing still triggers
-# local time/date replies without allowing unrelated sentences to match.
-_GREETING_PREFIX = (
-    r"(?:(?:hey|hi|hello|jugnu|ok|okay|please|pls|plz|sorry|wait|"
-    r"excuse\s+me|bhai|yaar|ji)[,:\s]+)*"
 )
-_ASK_PREFIX = (
-    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
-    r"(?:(?:tell|show|give)\s+me[,:\s]+|do\s+you\s+(?:know|have)[,:\s]+)?"
-)
-_POLITE_SUFFIX = (
-    r"(?:[,\s]+(?:please|pls|plz|right\s+now|now|today|abhi|bhai|yaar|ji|jugnu))*"
-)
-_TIME_OR_DATE_NOUN = (
-    r"(?:date\s+(?:and|&)\s+time|time\s+(?:and|&)\s+date|"
-    r"day\s+(?:and|&)\s+date|date\s+(?:and|&)\s+day|time|date)"
+from context_ingest import (
+    AttachedDocument,
+    AttachmentError,
+    assemble_prompt_with_attachments,
+    ingest_file,
 )
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
@@ -94,124 +76,68 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message):
-    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
+def ask_ai(user_message, attachments=None):
+    prompt_text = (
+        assemble_prompt_with_attachments(user_message, attachments)
+        if attachments
+        else user_message
+    )
+    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": prompt_text}]))
 
     if result.ok:
         return result.answer
 
     if result.error == ERROR_CONNECTION:
         return (
-def ask_ai(user_message, stream=True):
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_message
-                    }
-                ],
-                "stream": stream
-            },
-            stream=stream,
-            timeout=120
-        )
-
-        response.raise_for_status()
-
-        if stream:
-            collected = []
-            lines = (
-                response.iter_lines()
-                if getattr(response, "raw", None) is not None
-                else (response._content.splitlines() if getattr(response, "_content", None) else [])
-            )
-            for line in lines:
-                if not line:
-                    continue
-                try:
-                    raw_str = (
-                        line.decode("utf-8").strip()
-                        if isinstance(line, (bytes, bytearray))
-                        else str(line).strip()
-                    )
-                    if not raw_str:
-                        continue
-                    data = json.loads(raw_str)
-                    content = data.get("message", {}).get("content", "")
-                    if content:
-                        sys.stdout.write(content)
-                        sys.stdout.flush()
-                        collected.append(content)
-                    if data.get("done", False):
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-            if collected:
-                print()
-            return "".join(collected).strip()
-
-        data = response.json()
-        answer = data["message"]["content"]
-        return answer.strip()
-
-    except requests.exceptions.ConnectionError:
-        msg = (
             "I cannot connect to Ollama. "
             "Please make sure Ollama is running."
         )
-        if stream:
-            print(msg)
-        return msg
 
     if result.error == ERROR_TIMEOUT:
         return (
-    except requests.exceptions.Timeout:
-        msg = (
             "The AI is taking too long to respond. "
             "Please try again."
         )
-        if stream:
-            print(msg)
-        return msg
 
     if result.error == ERROR_INVALID:
         return "An error occurred: Ollama returned an invalid response."
 
     return f"An error occurred: {result.detail}"
-    except Exception as error:
-        msg = f"An error occurred: {error}"
-        if stream:
-            print(msg)
-        return msg
 
 
 # ---------------- HELP ----------------
 
 def show_help():
     print("\nAvailable commands:")
-    print("1. time       - Show current time")
-    print("2. date       - Show today's date")
-    print("3. calculate  - Calculate a mathematical expression")
-    print("4. help       - Show available commands")
-    print("5. bye        - Exit the assistant")
+    print("1. time           - Show current time")
+    print("2. date           - Show today's date")
+    print("3. calculate      - Calculate a mathematical expression")
+    print("4. /attach <path> - Attach a local code or text file")
+    print("5. /files         - List attached files")
+    print("6. /detach        - Clear all attachments")
+    print("7. help           - Show available commands")
+    print("8. bye            - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant():
+def run_assistant(initial_files=None):
+    active_attachments: list[AttachedDocument] = []
+    if initial_files:
+        for file_path in initial_files:
+            try:
+                doc = ingest_file(file_path)
+                active_attachments.append(doc)
+                print(f"[Attached: {doc.filename} ({doc.formatted_size})]")
+            except AttachmentError as err:
+                print(f"[Attachment error: {err}]")
+
     greet()
 
     while True:
-        user_input = input("\nYou: ").strip()
+        prompt_prefix = f"\nYou ({len(active_attachments)} attached): " if active_attachments else "\nYou: "
+        user_input = input(prompt_prefix).strip()
 
         if not user_input:
             continue
@@ -240,13 +166,48 @@ def run_assistant():
             expression = user_input[10:].strip()
             print("\nAssistant:", calculate(expression))
 
+        # Attach local file
+        elif command.startswith("/attach ") or command.startswith("/file "):
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            if not target:
+                print("\nAssistant: Please provide a file path, e.g. /attach path/to/file.py")
+            else:
+                try:
+                    doc = ingest_file(target)
+                    active_attachments.append(doc)
+                    print(f"\nAssistant: Attached '{doc.filename}' ({doc.formatted_size}, {doc.language}).")
+                except AttachmentError as err:
+                    print(f"\nAssistant: Could not attach file: {err}")
+
+        # List attached files
+        elif command in ["/files", "/attachments"]:
+            if not active_attachments:
+                print("\nAssistant: No files attached.")
+            else:
+                print("\nAttached files:")
+                for idx, doc in enumerate(active_attachments, 1):
+                    trunc = " (truncated)" if doc.is_truncated else ""
+                    print(f"{idx}. {doc.filename} ({doc.formatted_size}, {doc.language}){trunc}")
+
+        # Detach all attachments
+        elif command in ["/detach", "/clear-attachments"]:
+            count = len(active_attachments)
+            active_attachments.clear()
+            print(f"\nAssistant: Cleared {count} attached file(s).")
+
         # General AI question
         else:
-            print("\nAssistant: ", end="", flush=True)
-            ask_ai(user_input, stream=True)
+            print("\nAssistant: Thinking...")
+            answer = ask_ai(user_input, attachments=active_attachments)
+            print("\nAssistant:", answer)
+            active_attachments.clear()
 
 
 # ---------------- START ----------------
 
 if __name__ == "__main__":
-    run_assistant()
+    parser = argparse.ArgumentParser(description="JUGNU CLI Assistant")
+    parser.add_argument("--file", "-f", action="append", help="Path to local file to attach")
+    args, _ = parser.parse_known_args()
+    run_assistant(initial_files=args.file)

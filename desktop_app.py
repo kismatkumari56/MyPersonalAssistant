@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from tkinter import font as tkfont
 import math
 import json
@@ -14,6 +14,13 @@ import re
 from core import (
     ERROR_CONNECTION, ERROR_INVALID, ERROR_TIMEOUT, build_messages, calculate,
     chat as ollama_chat, is_time_question as detect_time_question, local_datetime_text, local_now,
+    stream_chat,
+)
+from context_ingest import (
+    AttachedDocument,
+    AttachmentError,
+    assemble_prompt_with_attachments,
+    ingest_file,
 )
 from strings import build_system_prompt, get_string, next_language, normalize_language
 from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
@@ -256,9 +263,12 @@ class JugnuApp:
         self.current_stream_response = None
         self.stop_event = threading.Event()
         self.streaming_bubble_info = None
+        self.attachments = []
 
         self.build_ui()
         self.root.bind("<Escape>", self._on_escape)
+        self.root.bind("<Control-o>", lambda event: self.pick_attachments())
+        self.root.bind("<Control-O>", lambda event: self.pick_attachments())
         if self.chats:
             self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
         else:
@@ -522,6 +532,10 @@ class JugnuApp:
 
         self.bottom = tk.Frame(self.content)
         self.bottom.pack(fill="x", padx=12, pady=(0, 12))
+        self.attachments_frame = tk.Frame(self.bottom)
+        self.attach_btn = Button(self.bottom, command=self.pick_attachments,
+                                 relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=12)
+        self.attach_btn.pack(side="left", padx=(0, 8))
         self.input_box = tk.Text(self.bottom, height=2, wrap="word", font=("Segoe UI", 11),
                                  relief="flat", padx=10, pady=10, undo=True)
         self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
@@ -529,7 +543,6 @@ class JugnuApp:
         self.input_box.bind("<Return>", self.send_message)
         self.input_box.bind("<Shift-Return>", lambda event: None)
         self.send_btn = Button(self.bottom, command=self.send_message,
-                                  relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
                                relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
         self.send_btn.pack(side="right")
         self.stop_gen_btn = Button(self.bottom, command=self.stop_generating,
@@ -688,9 +701,16 @@ class JugnuApp:
         self.input_box.configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"])
         self.send_btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
                                 activeforeground="white", cursor="hand2")
+        if hasattr(self, "attach_btn"):
+            self.attach_btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
+                                      activeforeground="white", cursor="hand2")
+        if hasattr(self, "attachments_frame"):
+            self.attachments_frame.configure(bg=c["bg"])
         if hasattr(self, "stop_gen_btn"):
             self.stop_gen_btn.configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
                                         activeforeground=c["text"], cursor="hand2")
+        if hasattr(self, "render_attachment_chips"):
+            self.render_attachment_chips()
         self.theme_btn.configure(text=self.theme_button_text())
         self.update_voice_window()
         self.refresh_history_list()
@@ -925,6 +945,8 @@ class JugnuApp:
         self.theme_btn.configure(text=self.theme_button_text())
         self.header_title.configure(text=self.t("header_title"))
         self.send_btn.configure(text=self.t("send_btn"))
+        if hasattr(self, "attach_btn"):
+            self.attach_btn.configure(text=self.t("attach_file_btn"))
         if hasattr(self, "stop_gen_btn"):
             self.stop_gen_btn.configure(text=self.t("stop_btn"))
         key, kwargs = self._status
@@ -951,6 +973,9 @@ class JugnuApp:
     def new_chat(self):
         # A blank chat is temporary. It must not create a history entry until a message is sent.
         self.tts.stop()
+        self.attachments = []
+        if hasattr(self, "render_attachment_chips"):
+            self.render_attachment_chips()
         self.make_draft()
         self.refresh_history_list()
         self.display_chat()
@@ -971,6 +996,9 @@ class JugnuApp:
         index = len(self.chats) - 1 - selection[0]
         if 0 <= index < len(self.chats):
             self.tts.stop()
+            self.attachments = []
+            if hasattr(self, "render_attachment_chips"):
+                self.render_attachment_chips()
             self.current_id = self.chats[index]["id"]
             self.draft_chat = None
             self.display_chat()
@@ -1104,6 +1132,9 @@ class JugnuApp:
         if getattr(self, "is_streaming", False) and getattr(self, "current_stream_chat_id", None) == chat.get("id"):
             self.stop_generating()
         self.tts.stop()
+        self.attachments = []
+        if hasattr(self, "render_attachment_chips"):
+            self.render_attachment_chips()
         self.chats = [saved for saved in self.chats if saved.get("id") != chat.get("id")]
         self.draft_chat = None
         self.make_draft()
@@ -1498,11 +1529,105 @@ class JugnuApp:
 
         return None
 
+    # ---------- Document Attachments & Context Ingestion ----------
+    def pick_attachments(self):
+        """Open a file dialog to select local document(s) or code file(s)."""
+        file_paths = filedialog.askopenfilenames(
+            title=self.t("attach_dialog_title"),
+            filetypes=[
+                ("All Supported Files", "*.*"),
+                ("Code & Scripts", "*.py;*.js;*.ts;*.html;*.css;*.cpp;*.c;*.h;*.hpp;*.java;*.rs;*.go;*.sh;*.bat;*.ps1"),
+                ("Documents & Data", "*.txt;*.md;*.json;*.csv;*.log;*.yaml;*.yml;*.xml;*.ini;*.toml;*.sql"),
+            ],
+        )
+        if not file_paths:
+            return
+
+        for path in file_paths:
+            resolved = str(os.path.abspath(path))
+            if any(att.path == resolved for att in self.attachments):
+                continue
+            try:
+                doc = ingest_file(path)
+                self.attachments.append(doc)
+            except AttachmentError as exc:
+                messagebox.showerror(self.t("attach_error_title"), str(exc))
+            except Exception as exc:
+                messagebox.showerror(
+                    self.t("attach_error_title"),
+                    self.t("attach_err_read", error=str(exc)),
+                )
+
+        self.render_attachment_chips()
+
+    def remove_attachment(self, index):
+        """Remove an attached document by index and refresh chip display."""
+        if 0 <= index < len(self.attachments):
+            self.attachments.pop(index)
+            self.render_attachment_chips()
+
+    def render_attachment_chips(self):
+        """Render pill-style chip badges for currently attached documents."""
+        if not hasattr(self, "attachments_frame"):
+            return
+
+        for child in self.attachments_frame.winfo_children():
+            child.destroy()
+
+        if not self.attachments:
+            self.attachments_frame.pack_forget()
+            return
+
+        c = self.colors
+        if hasattr(self, "attach_btn"):
+            self.attachments_frame.pack(side="top", fill="x", pady=(0, 6), before=self.attach_btn)
+        else:
+            self.attachments_frame.pack(side="top", fill="x", pady=(0, 6))
+        self.attachments_frame.configure(bg=c["bg"])
+
+        for idx, doc in enumerate(self.attachments):
+            chip = tk.Frame(
+                self.attachments_frame,
+                bg=c["sidebar"],
+                padx=6,
+                pady=2,
+                highlightbackground=c["accent"],
+                highlightthickness=1,
+            )
+            chip.pack(side="left", padx=(0, 6), pady=2)
+
+            trunc_indicator = " ⚠️" if doc.is_truncated else ""
+            label_text = f"📄 {doc.filename} ({doc.formatted_size}){trunc_indicator}"
+            lbl = tk.Label(
+                chip,
+                text=label_text,
+                bg=c["sidebar"],
+                fg=c["text"],
+                font=("Segoe UI", 8, "bold"),
+            )
+            lbl.pack(side="left", padx=(2, 4))
+
+            remove_btn = Button(
+                chip,
+                text="✕",
+                command=lambda i=idx: self.remove_attachment(i),
+                bg=c["sidebar"],
+                fg=c["muted"],
+                activebackground=c["danger"],
+                activeforeground="white",
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+                padx=3,
+                pady=1,
+            )
+            remove_btn.pack(side="left")
+
     def send_message(self, _event=None):
         if self.busy:
             return "break"
         user_text = self.input_box.get("1.0", "end").strip()
-        if not user_text:
+        has_attachments = bool(getattr(self, "attachments", None))
+        if not user_text and not has_attachments:
             return "break"
         self.tts.stop()  # A new message interrupts any reply still being read aloud.
         chat = self.current_chat()
@@ -1512,12 +1637,26 @@ class JugnuApp:
         if self.draft_chat and chat.get("id") == self.draft_chat.get("id"):
             self.chats.append(self.draft_chat)
             self.draft_chat = None
+
+        if has_attachments:
+            assembled_message = assemble_prompt_with_attachments(user_text, self.attachments)
+            first_att_name = self.attachments[0].filename
+            self.attachments = []
+            self.render_attachment_chips()
+        else:
+            assembled_message = user_text
+            first_att_name = ""
+
         if chat.get("title") == "New Chat":
-            chat["title"] = user_text[:34]
+            if user_text:
+                chat["title"] = user_text[:34]
+            elif first_att_name:
+                chat["title"] = f"File: {first_att_name}"[:34]
+
         time_now = message_time_text()
-        chat["messages"].append({"role": "user", "content": user_text, "time": time_now})
+        chat["messages"].append({"role": "user", "content": assembled_message, "time": time_now})
         self.input_box.delete("1.0", "end")
-        self.add_bubble("user", user_text, timestamp=time_now)
+        self.add_bubble("user", assembled_message, timestamp=time_now)
         self.refresh_history_list()
         self.save_history()
         self.busy = True
@@ -1525,29 +1664,18 @@ class JugnuApp:
         self.set_status("status_thinking")
 
         # Answer clock/date questions locally for accuracy and speed—no model call required.
-        if self.is_time_question(user_text):
+        if not has_attachments and self.is_time_question(user_text):
             answer = self.t("time_answer", when=local_datetime_text())
             self.finish_answer(answer, chat["id"])
             return "break"
 
         # Answer arithmetic questions locally using safe AST calculator—no model call required.
-        calc_expr = self.extract_calc_expression(user_text)
-        if calc_expr is not None:
-            answer = calculate(calc_expr)
-            self.finish_answer(answer, chat["id"])
-            return "break"
-
-        self.busy = True
-        self.is_streaming = True
-        self.current_stream_chat_id = chat["id"]
-        if hasattr(self, "stop_event") and self.stop_event is not None:
-            self.stop_event.clear()
-        self.send_btn.configure(state="disabled")
-        if hasattr(self, "stop_gen_btn"):
-            self.stop_gen_btn.pack(side="right", padx=(0, 8))
-        self.set_status("status_streaming")
-        time_assistant = message_time_text()
-        self.create_streaming_bubble(chat["id"], timestamp=time_assistant)
+        if not has_attachments:
+            calc_expr = self.extract_calc_expression(user_text)
+            if calc_expr is not None:
+                answer = calculate(calc_expr)
+                self.finish_answer(answer, chat["id"])
+                return "break"
 
         threading.Thread(target=self.ask_ollama, args=(chat["id"],), daemon=True).start()
         return "break"
@@ -1808,83 +1936,6 @@ class JugnuApp:
         else:
             answer = get_string(language, "error_generic", error=result.detail)
         self.root.after(0, lambda: self.finish_answer(answer, chat_id, is_error=is_error))
-        accumulated = []
-        is_error = False
-        error_message = None
-
-        if not hasattr(self, "stop_event") or self.stop_event is None:
-            self.stop_event = threading.Event()
-
-        try:
-            chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-            if not chat:
-                # The conversation may have been cleared while the request was running.
-                self.root.after(0, lambda: self.finish_streaming(chat_id, "", is_error=True))
-                return
-            # Keep recent context only, to reduce prompt size and improve latency.
-            recent = [
-                m for m in chat.get("messages", [])
-                if not (m["role"] == "assistant" and m.get("is_error") is True)
-            ][-10:]
-            messages = [{
-                "role": "system",
-                "content": build_system_prompt(language, local_datetime_text())
-            }]
-            messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
-            response = requests.post(OLLAMA_URL, json={
-                "model": MODEL,
-                "messages": messages,
-                "stream": True,
-                "keep_alive": "10m",
-                "options": {"num_predict": 256, "temperature": 0.6}
-            }, stream=True, timeout=180)
-            self.current_stream_response = response
-            response.raise_for_status()
-
-            for line in iter_response_lines(response):
-                if self.stop_event.is_set():
-                    break
-                if not line:
-                    continue
-                try:
-                    if isinstance(line, (bytes, bytearray)):
-                        raw_str = line.decode("utf-8").strip()
-                    else:
-                        raw_str = str(line).strip()
-                    if not raw_str:
-                        continue
-                    data = json.loads(raw_str)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    raise InvalidOllamaResponse()
-
-                token, is_done = ollama_stream_chunk(data)
-                if token:
-                    accumulated.append(token)
-                    self.root.after(0, lambda t=token: self.append_stream_token(chat_id, t))
-                if is_done:
-                    break
-
-            if not "".join(accumulated).strip() and not self.stop_event.is_set():
-                is_error = True
-                error_message = get_string(language, "error_empty_reply")
-
-        except InvalidOllamaResponse:
-            is_error = True
-            error_message = get_string(language, "error_invalid_response")
-        except requests.Timeout:
-            is_error = True
-            error_message = get_string(language, "error_timeout")
-        except requests.ConnectionError:
-            is_error = True
-            error_message = get_string(language, "error_connection")
-        except (requests.RequestException, ValueError) as e:
-            is_error = True
-            error_message = get_string(language, "error_generic", error=e)
-        finally:
-            full_text = "".join(accumulated)
-            self.root.after(0, lambda: self.finish_streaming(
-                chat_id, full_text, is_error=is_error, error_message=error_message
-            ))
 
     def finish_answer(self, answer, chat_id=None, is_error=False):
         self.busy = False

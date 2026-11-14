@@ -261,3 +261,13 @@ def chat(messages, *, timeout=120, keep_alive=None, options=None):
         return ChatResult(error=ERROR_CONNECTION)
     except Exception as error:  # bad status, unreadable JSON, anything unexpected
         return ChatResult(error=ERROR_OTHER, detail=str(error))
+
+
+def stream_chat(messages, *, timeout=180, keep_alive=None, options=None):
+    """Send `messages` to Ollama with stream=True and return the streaming response object."""
+    payload = {"model": MODEL, "messages": messages, "stream": True}
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
+    if options is not None:
+        payload["options"] = options
+    return requests.post(OLLAMA_URL, json=payload, stream=True, timeout=timeout)

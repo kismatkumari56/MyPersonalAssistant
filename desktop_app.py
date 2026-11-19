@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox, filedialog, simpledialog
 from tkinter import messagebox, filedialog
 from tkinter import font as tkfont
 import math
@@ -46,6 +47,7 @@ from exporter import (
     ConversationExporter, extract_chat_metadata, sanitize_filename
 )
 from personas import Persona, PersonaManager, BUILTIN_PERSONAS
+from vault import VaultManager
 
 APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
 HISTORY_FILE = "jugnu_history.json"
@@ -349,6 +351,10 @@ class JugnuApp:
         self.root.geometry("1200x760")
         self.root.minsize(850, 570)
 
+        self.vault = VaultManager(history_file=HISTORY_FILE, vault_file="jugnu_history.enc", backup_dir="backups")
+        self.vault_win = None
+        self.unlock_win = None
+
         self.chats = self.load_history()
         self.current_id = None
         self.draft_chat = None  # Unsaved empty chat; saved only after first message.
@@ -387,6 +393,14 @@ class JugnuApp:
 
         self.build_ui()
         self.bind_hotkeys()
+        self.root.bind_all("<Key>", lambda _e: getattr(self, "vault", None) and self.vault.record_activity(), add="+")
+        self.root.bind_all("<ButtonPress>", lambda _e: getattr(self, "vault", None) and self.vault.record_activity(), add="+")
+        if self.chats:
+            self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
+            self.current_persona_id = self.chats[-1].get("persona_id", "default")
+
+        self.build_ui()
+        self.bind_hotkeys()
         if self.chats:
             self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
             self.current_persona_id = self.chats[-1].get("persona_id", "default")
@@ -395,6 +409,24 @@ class JugnuApp:
         self.apply_language()
         self.apply_theme()
         self.update_persona_ui()
+        self.update_vault_ui()
+        self.root.after(250, self.warm_up)
+        self.poll_speech()
+        self.poll_stt()
+        self.poll_vault()
+        if self.vault.is_vault_enabled() and self.vault.is_locked:
+            self.root.after(350, self.open_unlock_vault_dialog)
+
+    def load_history(self):
+        """Load valid, non-empty conversations from the history file or vault."""
+        try:
+            if getattr(self, "vault", None) and self.vault.is_vault_enabled():
+                if self.vault.is_locked or not self.vault.current_passphrase:
+                    return []
+                data = self.vault.load_chats()
+            else:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as history_file:
+                    data = json.load(history_file)
         self.root.after(250, self.warm_up)
         self.poll_speech()
         self.poll_stt()
@@ -436,6 +468,17 @@ class InputBox(QPlainTextEdit):
     """The message box. Enter sends; Shift+Enter starts a new line."""
     submitted = Signal()
 
+        if getattr(self, "vault", None) and self.vault.is_vault_enabled():
+            if not self.vault.is_locked and self.vault.current_passphrase:
+                try:
+                    self.vault.save_chats(saved_chats)
+                except Exception as error:
+                    self.set_status("status_save_error", error=error)
+            return
+
+        history_path = os.path.abspath(HISTORY_FILE)
+        history_dir = os.path.dirname(history_path)
+        temp_path = None
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() & Qt.ShiftModifier:
             self.submitted.emit()
@@ -1099,6 +1142,9 @@ class JugnuWindow(QMainWindow):
         self.persona_studio_btn = Button(self.sidebar, command=self.open_persona_studio,
                                          relief="flat", pady=10)
         self.persona_studio_btn.pack(fill="x", padx=12, pady=(0, 8))
+        self.vault_btn = Button(self.sidebar, command=self.open_vault_dialog,
+                                relief="flat", pady=10)
+        self.vault_btn.pack(fill="x", padx=12, pady=(0, 8))
         self.language_btn = Button(self.sidebar, command=self.toggle_language,
                                       relief="flat", pady=10)
         self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
@@ -1568,6 +1614,7 @@ class JugnuWindow(QMainWindow):
         self.history_list.configure(bg=c["sidebar"], fg=c["text"],
                                     selectbackground=c["accent"], selectforeground="white")
         for btn in [self.new_btn, self.theme_btn, self.voice_btn, self.language_btn,
+                    self.voice_settings_btn, self.persona_studio_btn, self.vault_btn]:
                     self.voice_settings_btn, self.persona_studio_btn]:
         self.history_list.configure(bg=c["sidebar"], fg=c["text"],
                                     selectbackground=c["accent"], selectforeground="white")
@@ -2001,6 +2048,8 @@ class JugnuWindow(QMainWindow):
         self.root.bind("<Control-P>", lambda _e: self.open_persona_studio())
         self.root.bind("<Control-Shift-p>", lambda _e: self.open_persona_studio())
         self.root.bind("<Control-Shift-P>", lambda _e: self.open_persona_studio())
+        self.root.bind("<Control-l>", lambda _e: self.open_vault_dialog())
+        self.root.bind("<Control-L>", lambda _e: self.open_vault_dialog())
 
     def mic_button_text(self):
         if self.stt.is_listening:
@@ -2161,6 +2210,7 @@ class JugnuWindow(QMainWindow):
         self.persona_studio_btn.configure(text=self.t("persona_studio_btn"))
         self.update_voice_window()
         self.update_persona_ui()
+        self.update_vault_ui()
         self.update_voice_window()
         self.language_btn.configure(text=self.t("language_btn", name=self.t("language_name")))
         self.theme_btn.configure(text=self.theme_button_text())
@@ -2261,6 +2311,8 @@ class JugnuWindow(QMainWindow):
                          command=lambda cid=chat["id"]: self.open_export_dialog(cid))
         menu.add_command(label="🎭  " + self.t("persona_studio_btn"),
                          command=self.open_persona_studio)
+        menu.add_command(label="🔒  " + self.t("vault_btn"),
+                         command=self.open_vault_dialog)
         menu.add_separator()
         menu.add_command(label=self.t("chat_menu_rename"),
                          command=lambda cid=chat["id"]: self.rename_chat(cid))
@@ -3114,6 +3166,276 @@ class JugnuWindow(QMainWindow):
         y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
         win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
+        return win
+
+    def update_vault_ui(self):
+        if hasattr(self, "vault_btn"):
+            is_locked = getattr(self, "vault", None) and self.vault.is_vault_enabled() and self.vault.is_locked
+            self.vault_btn.configure(text=self.t("vault_btn_locked" if is_locked else "vault_btn"))
+
+    def poll_vault(self):
+        if getattr(self, "vault", None):
+            if self.vault.check_auto_lock():
+                self.on_vault_auto_locked()
+            try:
+                self.vault.check_scheduled_backup()
+            except Exception:
+                pass
+        self.root.after(5000, self.poll_vault)
+
+    def on_vault_auto_locked(self):
+        self.chats = []
+        self.current_id = None
+        self.make_draft()
+        self.refresh_history_list()
+        self.display_chat()
+        self.update_vault_ui()
+        self.open_unlock_vault_dialog()
+
+    def open_unlock_vault_dialog(self):
+        if not (getattr(self, "vault", None) and self.vault.is_vault_enabled() and self.vault.is_locked):
+            return None
+        if getattr(self, "unlock_win", None) and self.unlock_win.winfo_exists():
+            self.unlock_win.lift()
+            self.unlock_win.focus_force()
+            return self.unlock_win
+
+        c = self.colors
+        win = tk.Toplevel(self.root)
+        self.unlock_win = win
+        win.title("🔒 " + self.t("vault_dialog_title"))
+        win.geometry("380x180")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+        win.configure(bg=c["panel"])
+
+        tk.Label(win, text="🔒  " + self.t("vault_dialog_title"),
+                 font=("Segoe UI", 11, "bold"), bg=c["panel"], fg=c["text"]).pack(pady=(14, 4))
+        tk.Label(win, text=self.t("vault_passphrase_label"),
+                 font=("Segoe UI", 9), bg=c["panel"], fg=c["muted"]).pack()
+
+        pass_entry = tk.Entry(win, show="*", font=("Segoe UI", 10), bg=c["entry"], fg=c["text"],
+                              insertbackground=c["text"], relief="flat", justify="center")
+        pass_entry.pack(fill="x", padx=40, pady=8)
+        pass_entry.focus_set()
+
+        err_lbl = tk.Label(win, text="", font=("Segoe UI", 8), bg=c["panel"], fg=c["accent2"])
+        err_lbl.pack(pady=(0, 4))
+
+        def do_unlock(_event=None):
+            try:
+                self.vault.unlock(pass_entry.get())
+                self.chats = self.load_history()
+                if self.chats:
+                    self.current_id = self.chats[-1]["id"]
+                    self.current_persona_id = self.chats[-1].get("persona_id", "default")
+                else:
+                    self.make_draft()
+                self.refresh_history_list()
+                self.display_chat()
+                self.update_vault_ui()
+                win.destroy()
+            except Exception:
+                err_lbl.configure(text=self.t("vault_unlock_error"))
+                pass_entry.delete(0, "end")
+
+        pass_entry.bind("<Return>", do_unlock)
+        row = tk.Frame(win, bg=c["panel"])
+        row.pack(pady=4)
+        Button(row, text=self.t("vault_unlock_btn"), command=do_unlock,
+               bg=c["accent"], fg="white", relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left", padx=4)
+        Button(row, text=self.t("persona_close_btn"), command=win.destroy,
+               bg=c["border"], fg=c["text"], relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=4)
+
+        win.pass_entry = pass_entry
+        win.do_unlock = do_unlock
+        win.err_lbl = err_lbl
+        return win
+
+    def open_vault_dialog(self):
+        if getattr(self, "vault", None) and self.vault.is_vault_enabled() and self.vault.is_locked:
+            return self.open_unlock_vault_dialog()
+        if getattr(self, "vault_win", None) and self.vault_win.winfo_exists():
+            self.vault_win.lift()
+            self.vault_win.focus_force()
+            return self.vault_win
+
+        c = self.colors
+        win = tk.Toplevel(self.root)
+        self.vault_win = win
+        win.title("🔒 " + self.t("vault_dialog_title"))
+        win.geometry("480x510")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+        win.configure(bg=c["panel"])
+
+        is_enc = self.vault.is_vault_enabled()
+        tk.Label(win, text="🔒  " + self.t("vault_dialog_title"),
+                 font=("Segoe UI", 12, "bold"), bg=c["panel"], fg=c["text"]).pack(anchor="w", padx=18, pady=(12, 4))
+
+        status_lbl = tk.Label(win, text=self.t("vault_status_enabled" if is_enc else "vault_status_disabled"),
+                              font=("Segoe UI", 9, "bold"), bg=c["panel"], fg=c["accent"] if is_enc else c["muted"])
+        status_lbl.pack(anchor="w", padx=18, pady=(0, 8))
+
+        # Encryption frame
+        enc_card = tk.LabelFrame(win, text=" " + self.t("vault_btn") + " ",
+                                 font=("Segoe UI", 9, "bold"), bg=c["panel"], fg=c["text"], padx=10, pady=8)
+        enc_card.pack(fill="x", padx=18, pady=(0, 8))
+
+        if not is_enc:
+            tk.Label(enc_card, text=self.t("vault_passphrase_label"), bg=c["panel"], fg=c["muted"], font=("Segoe UI", 8)).pack(anchor="w")
+            p1_entry = tk.Entry(enc_card, show="*", bg=c["entry"], fg=c["text"], relief="flat")
+            p1_entry.pack(fill="x", pady=(2, 4))
+            tk.Label(enc_card, text=self.t("vault_confirm_pass_label"), bg=c["panel"], fg=c["muted"], font=("Segoe UI", 8)).pack(anchor="w")
+            p2_entry = tk.Entry(enc_card, show="*", bg=c["entry"], fg=c["text"], relief="flat")
+            p2_entry.pack(fill="x", pady=(2, 6))
+
+            def do_enable():
+                p1, p2 = p1_entry.get(), p2_entry.get()
+                if p1 != p2:
+                    messagebox.showerror(self.t("vault_dialog_title"), self.t("vault_pass_mismatch"), parent=win)
+                    return
+                if len(p1.strip()) < 4:
+                    messagebox.showerror(self.t("vault_dialog_title"), self.t("vault_pass_short"), parent=win)
+                    return
+                try:
+                    self.vault.enable_vault(p1.strip(), self.chats)
+                    self.save_history()
+                    self.update_vault_ui()
+                    win.destroy()
+                    messagebox.showinfo(self.t("vault_dialog_title"), self.t("vault_status_enabled"), parent=self.root)
+                except Exception as ex:
+                    messagebox.showerror(self.t("vault_dialog_title"), str(ex), parent=win)
+
+            Button(enc_card, text=self.t("vault_enable_btn"), command=do_enable,
+                   bg=c["accent"], fg="white", relief="flat", padx=10, pady=4, cursor="hand2").pack(anchor="w")
+            win.p1_entry = p1_entry
+            win.p2_entry = p2_entry
+            win.do_enable = do_enable
+        else:
+            row_enc = tk.Frame(enc_card, bg=c["panel"])
+            row_enc.pack(fill="x", pady=2)
+            def do_lock():
+                self.vault.lock()
+                win.destroy()
+                self.on_vault_auto_locked()
+            Button(row_enc, text=self.t("vault_lock_now_btn"), command=do_lock,
+                   bg=c["accent2"], fg="white", relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=(0, 6))
+
+            def do_disable():
+                pwd = simpledialog.askstring(self.t("vault_dialog_title"), self.t("vault_passphrase_label"), show="*", parent=win)
+                if not pwd:
+                    return
+                try:
+                    self.vault.disable_vault(pwd)
+                    self.chats = self.load_history()
+                    self.save_history()
+                    self.update_vault_ui()
+                    win.destroy()
+                    messagebox.showinfo(self.t("vault_dialog_title"), self.t("vault_status_disabled"), parent=self.root)
+                except Exception:
+                    messagebox.showerror(self.t("vault_dialog_title"), self.t("vault_unlock_error"), parent=win)
+            Button(row_enc, text=self.t("vault_disable_btn"), command=do_disable,
+                   bg=c["danger"], fg=c["accent2"], relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left")
+            win.do_lock = do_lock
+            win.do_disable = do_disable
+
+        # Auto-lock frame
+        lock_card = tk.LabelFrame(win, text=" " + self.t("vault_autolock_label") + " ",
+                                  font=("Segoe UI", 9, "bold"), bg=c["panel"], fg=c["text"], padx=10, pady=6)
+        lock_card.pack(fill="x", padx=18, pady=(0, 8))
+        lock_var = tk.IntVar(value=self.vault.auto_lock_minutes)
+        for mins, key in [(5, "vault_autolock_5"), (15, "vault_autolock_15"), (30, "vault_autolock_30"), (0, "vault_autolock_never")]:
+            def set_m(m=mins):
+                self.vault.auto_lock_minutes = m
+            tk.Radiobutton(lock_card, text=self.t(key), variable=lock_var, value=mins,
+                           command=set_m, bg=c["panel"], fg=c["text"],
+                           activebackground=c["panel"], selectcolor=c["sidebar"]).pack(side="left", padx=4)
+
+        # Backups & Maintenance frame
+        bk_card = tk.LabelFrame(win, text=" " + self.t("vault_backup_section") + " ",
+                                font=("Segoe UI", 9, "bold"), bg=c["panel"], fg=c["text"], padx=10, pady=8)
+        bk_card.pack(fill="x", padx=18, pady=(0, 8))
+
+        sched_row = tk.Frame(bk_card, bg=c["panel"])
+        sched_row.pack(fill="x", pady=(0, 6))
+        tk.Label(sched_row, text=self.t("vault_schedule_label"), bg=c["panel"], fg=c["text"]).pack(side="left")
+        sched_var = tk.StringVar(value=self.vault.backup_schedule)
+        om = tk.OptionMenu(sched_row, sched_var, "daily", "weekly", "manual",
+                           command=lambda val: setattr(self.vault, "backup_schedule", val))
+        om.configure(bg=c["entry"], fg=c["text"], relief="flat", highlightthickness=0)
+        om.pack(side="left", padx=6)
+        tk.Label(sched_row, text=self.t("vault_retention_label", count=self.vault.retention_count),
+                 bg=c["panel"], fg=c["muted"], font=("Segoe UI", 8)).pack(side="right")
+
+        btn_grid = tk.Frame(bk_card, bg=c["panel"])
+        btn_grid.pack(fill="x", pady=2)
+
+        def do_backup_now():
+            try:
+                p = self.vault.create_backup()
+                messagebox.showinfo(self.t("vault_dialog_title"), self.t("vault_backup_success", path=p), parent=win)
+            except Exception as ex:
+                messagebox.showerror(self.t("vault_dialog_title"), str(ex), parent=win)
+
+        def do_restore():
+            p = filedialog.askopenfilename(title=self.t("vault_restore_btn"),
+                                           initialdir=self.vault.backup_dir,
+                                           filetypes=[("Vault / History", "*.enc *.json"), ("All Files", "*.*")], parent=win)
+            if not p:
+                return
+            pw = None
+            if p.endswith(".enc"):
+                pw = simpledialog.askstring(self.t("vault_dialog_title"), self.t("vault_passphrase_label"), show="*", parent=win)
+                if not pw:
+                    return
+            try:
+                self.vault.restore_backup(p, passphrase=pw)
+                self.chats = self.load_history()
+                if self.chats:
+                    self.current_id = self.chats[-1]["id"]
+                else:
+                    self.make_draft()
+                self.refresh_history_list()
+                self.display_chat()
+                self.update_vault_ui()
+                win.destroy()
+                messagebox.showinfo(self.t("vault_dialog_title"), self.t("vault_restore_success"), parent=self.root)
+            except Exception as ex:
+                messagebox.showerror(self.t("vault_dialog_title"), str(ex), parent=win)
+
+        def do_verify():
+            ok, msg = self.vault.verify_integrity()
+            if ok:
+                messagebox.showinfo(self.t("vault_integrity_title"), f"✅ {msg}", parent=win)
+            else:
+                messagebox.showerror(self.t("vault_integrity_title"), f"❌ {msg}", parent=win)
+
+        def do_vacuum():
+            try:
+                o, n = self.vault.vacuum()
+                messagebox.showinfo(self.t("vault_dialog_title"), self.t("vault_vacuum_success", old_size=o, new_size=n), parent=win)
+            except Exception as ex:
+                messagebox.showerror(self.t("vault_dialog_title"), str(ex), parent=win)
+
+        Button(btn_grid, text=self.t("vault_backup_now_btn"), command=do_backup_now,
+               bg=c["accent"], fg="white", relief="flat", padx=6, pady=4, cursor="hand2").pack(side="left", padx=2)
+        Button(btn_grid, text=self.t("vault_restore_btn"), command=do_restore,
+               bg=c["accent"], fg="white", relief="flat", padx=6, pady=4, cursor="hand2").pack(side="left", padx=2)
+        Button(btn_grid, text=self.t("vault_integrity_btn"), command=do_verify,
+               bg=c["panel"], fg=c["text"], relief="flat", padx=6, pady=4, cursor="hand2").pack(side="left", padx=2)
+        Button(btn_grid, text=self.t("vault_vacuum_btn"), command=do_vacuum,
+               bg=c["panel"], fg=c["text"], relief="flat", padx=6, pady=4, cursor="hand2").pack(side="left", padx=2)
+
+        Button(win, text=self.t("persona_close_btn"), command=win.destroy,
+               bg=c["border"], fg=c["text"], relief="flat", padx=14, pady=5, cursor="hand2").pack(pady=(6, 8))
+
+        win.do_backup_now = do_backup_now
+        win.do_restore = do_restore
+        win.do_verify = do_verify
+        win.do_vacuum = do_vacuum
         return win
 
     def clear_chat(self):

@@ -33,6 +33,7 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 - 🌊 Dynamic audio visualizer with silence detection, background noise suppression, and auto-punctuation
 - 📤 Comprehensive Multi-Format Conversation Exporter: Export any chat to PDF (`.pdf`), Markdown (`.md`), offline HTML (`.html`) with syntax highlighting, and JSON (`.json`) datasets via modal dialog or `Ctrl+E` (`exporter.py`)
 - 🎭 Multi-Persona System Prompt Studio & Custom AI Persona Switcher: Built-in specialized presets (Senior Code Reviewer, Python Architect, Academic Writing Tutor, Socratic Teacher, Debugging Specialist), per-conversation persona binding, temperature & context overrides, and JSON import/export (`personas.py`). Keyboard shortcut: `Ctrl+P`
+- 🔒 Local Encrypted Chat Vault & Automated Backup Scheduler: Client-side database encryption (PBKDF2-HMAC-SHA256 authenticated envelope) with master passphrase, session auto-lock timer, automated background backup scheduler (daily/weekly/manual) with retention rotation, one-click integrity verification, vacuum compaction, and restore wizard (`vault.py`). Keyboard shortcut: `Ctrl+L`
 - 📝 Persistent chat history
 - ➕ New Chat & Clear Current Chat options
 - 🌓 Dark and Light Mode support
@@ -63,6 +64,9 @@ JUGNU has two front ends, a desktop window and a terminal version, that share on
 | `stt.py` | 100% offline local speech-to-text voice dictation engine with real-time waveform HUD |
 | `exporter.py` | Multi-format conversation exporter (PDF, Markdown with frontmatter, HTML with syntax highlighting, JSON) |
 | `personas.py` | Multi-persona system prompt studio, specialized presets, custom persona manager, and prompt injector |
+| `vault.py` | Local encrypted chat vault, authenticated encryption envelope, session auto-lock, and automated backup scheduler |
+| `history_lock.py` | Stops two windows from using the same chat history |
+| `tests/` | Automated tests (`test_core.py` covers core, `test_stt.py` covers voice dictation, `test_exporter.py` covers export, `test_personas.py` covers personas, `test_vault.py` covers encrypted vault) |
 | `history_lock.py` | Stops two windows from using the same chat history |
 | `tests/` | Automated tests (`test_core.py` covers core, `test_stt.py` covers voice dictation, `test_exporter.py` covers export, `test_personas.py` covers personas) |
 | `history_lock.py` | Stops two windows from using the same chat history |

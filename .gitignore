@@ -11,8 +11,11 @@ venv/
 # Local chat history and settings
 jugnu_history.json
 jugnu_history.json.lock
+jugnu_history.enc
+jugnu_history.enc.*
 jugnu_settings.json
 jugnu_personas.json
+backups/
 
 # Environment variables / secrets
 .env

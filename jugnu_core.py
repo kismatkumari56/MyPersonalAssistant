@@ -349,7 +349,11 @@ def model_messages(chat, language, persona=None):
         "role": "system",
         "content": build_system_prompt(language, local_datetime_text(), persona=persona)
     }]
-    messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
+    for m in recent:
+        item = {"role": m["role"], "content": m["content"]}
+        if m.get("images"):
+            item["images"] = m["images"]
+        messages.append(item)
     return messages
 
 
@@ -373,6 +377,16 @@ def ask_ollama(chat, language, persona=None, model=None):
     temp = persona.temperature if persona and hasattr(persona, "temperature") else 0.6
     try:
         chosen_model = model or chat.get("model") or MODEL
+        # Multimodal vision compatibility check
+        recent_has_images = any(m.get("images") for m in chat.get("messages", []))
+        if recent_has_images:
+            try:
+                from multimodal import check_vision_compatibility
+                advisory = check_vision_compatibility(chosen_model, True)
+                if advisory:
+                    return OllamaReply((advisory, True))
+            except ImportError:
+                pass
         response = requests.post(OLLAMA_URL, json={
             "model": chosen_model,
             "messages": model_messages(chat, language, persona=persona),

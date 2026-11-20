@@ -239,7 +239,11 @@ def build_messages(system_prompt, history, limit=HISTORY_LIMIT):
         if not (m["role"] == "assistant" and m.get("is_error") is True)
     ][-limit:]
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
+    for m in recent:
+        item = {"role": m["role"], "content": m["content"]}
+        if m.get("images"):
+            item["images"] = m["images"]
+        messages.append(item)
     return messages
 
 

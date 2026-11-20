@@ -218,6 +218,16 @@ class FlatButton(tk.Label):
         widget._pressed = False
         if str(widget["state"]) != "disabled":
             widget.configure(state="normal")
+
+    @staticmethod
+    def _on_release(event):
+        widget = event.widget
+        inside = 0 <= event.x < widget.winfo_width() and 0 <= event.y < widget.winfo_height()
+        if widget._pressed and inside:
+            widget._pressed = False
+            widget.invoke()
+        widget._pressed = False
+
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
@@ -241,16 +251,7 @@ from tts import RATE_MAX, RATE_MIN, TTSManager
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUBBLE_PT = 10        # chat text size, in points
 COPY_TEXT = "⧉ Copy"
-COPIED_TEXT = "✓ Copied!"
-
-    @staticmethod
-    def _on_release(event):
-        widget = event.widget
-        inside = 0 <= event.x < widget.winfo_width() and 0 <= event.y < widget.winfo_height()
-        if widget._pressed and inside:
-            widget._pressed = False
-            widget.invoke()
-        widget._pressed = False
+COPIED_TEXT = "✓ Copied!" 
 
 
 # tk.Button keeps the native look elsewhere; on macOS it ignores the theme colours.
@@ -507,6 +508,199 @@ class JugnuApp:
         self.update_persona_ui()
         self.update_vault_ui()
         self.arena_btn.configure(text=self.t("arena_btn"))
+
+    def load_stt_prefs(self):
+        auto_punct = True
+        silence_detect = True
+        silence_timeout = DEFAULT_SILENCE_TIMEOUT
+        noise_suppress = True
+        hotkey = DEFAULT_HOTKEY
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "stt_auto_punctuate" in data:
+                auto_punct = bool(data["stt_auto_punctuate"])
+            if "stt_silence_detection" in data:
+                silence_detect = bool(data["stt_silence_detection"])
+            if "stt_silence_timeout" in data and isinstance(data["stt_silence_timeout"], (int, float)):
+                silence_timeout = max(0.5, min(5.0, float(data["stt_silence_timeout"])))
+            if "stt_noise_suppression" in data:
+                noise_suppress = bool(data["stt_noise_suppression"])
+            if "stt_hotkey" in data and isinstance(data["stt_hotkey"], str) and data["stt_hotkey"].strip():
+                hotkey = data["stt_hotkey"].strip()
+        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+            pass
+        return auto_punct, silence_detect, silence_timeout, noise_suppress, hotkey
+
+    def save_settings(self):
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "dark_mode": self.dark_mode,
+                    "voice_enabled": self.voice_enabled,
+                    "language": self.language,
+                    "voice_rate": self.voice_rate,
+                    "voice_volume": self.voice_volume,
+                    "voice_id": self.voice_id,
+                    "stt_auto_punctuate": getattr(self, "stt_auto_punctuate", True),
+                    "stt_silence_detection": getattr(self, "stt_silence_detection", True),
+                    "stt_silence_timeout": getattr(self, "stt_silence_timeout", DEFAULT_SILENCE_TIMEOUT),
+                    "stt_noise_suppression": getattr(self, "stt_noise_suppression", True),
+                    "stt_hotkey": getattr(self, "stt_hotkey", DEFAULT_HOTKEY),
+                }, f)
+        except OSError:
+            pass
+        self.build_ui()
+        if self.chats:
+            self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
+        else:
+            self.make_draft()
+        self.apply_theme()
+        self.apply_language()
+
+        self.resize_timer = QTimer(self, singleShot=True, interval=60)
+        self.resize_timer.timeout.connect(self.fit_bubbles)
+        self.speech_timer = QTimer(self, interval=200)
+        self.speech_timer.timeout.connect(self.poll_speech)
+        self.speech_timer.start()
+        QTimer.singleShot(250, self, self.warm_up)
+
+    # ---------- Layout ----------
+    def build_ui(self):
+        # Visible text is filled in by apply_language(), so it can be switched at runtime.
+        self.main = tk.Frame(self.root)
+        self.main.pack(fill="both", expand=True)
+
+        self.sidebar = tk.Frame(self.main, width=230)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
+
+        self.brand = tk.Label(self.sidebar, text="🤖  JUGNU", font=("Segoe UI", 22, "bold"),
+                              anchor="w", padx=18, pady=18)
+        self.brand.pack(fill="x")
+        self.tagline = tk.Label(self.sidebar, text="Just an Unusually Genius\nNeural Utility",
+                                font=("Segoe UI", 9), justify="left", anchor="w", padx=20)
+        self.tagline.pack(fill="x", pady=(0, 18))
+
+        self.new_btn = Button(self.sidebar, command=self.new_chat,
+                                 font=("Segoe UI", 10, "bold"), relief="flat", pady=12)
+        self.new_btn.pack(fill="x", padx=12, pady=(0, 18))
+
+        self.history_label = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"),
+                                      anchor="w", padx=18)
+        self.history_label.pack(fill="x")
+
+        self.history_list = tk.Listbox(self.sidebar, relief="flat", borderwidth=0,
+                                       font=("Segoe UI", 9), activestyle="none")
+        self.history_list.pack(fill="both", expand=True, padx=8, pady=8)
+        self.history_list.bind("<<ListboxSelect>>", self.select_chat)
+        self.history_list.bind("<Button-3>", self.show_chat_menu)  # right-click (Windows / Linux)
+        self.history_list.bind("<Button-2>", self.show_chat_menu)  # right-click (macOS)
+
+        self.clear_btn = Button(self.sidebar, command=self.clear_chat,
+                                   relief="flat", pady=10)
+        self.clear_btn.pack(fill="x", padx=12, pady=(4, 8))
+        self.voice_btn = Button(self.sidebar, command=self.toggle_voice,
+                                   relief="flat", pady=10)
+        self.voice_btn.pack(fill="x", padx=12, pady=(0, 8))
+        if not self.tts.available:
+            self.voice_btn.configure(state="disabled")  # pyttsx3 not installed
+        self.voice_settings_btn = Button(self.sidebar, command=self.open_voice_settings,
+                                            relief="flat", pady=10)
+        self.voice_settings_btn.pack(fill="x", padx=12, pady=(0, 8))
+        if not (self.tts.available or self.stt.has_mic or self.stt.has_recognizer):
+            self.voice_settings_btn.configure(state="disabled")
+        self.persona_studio_btn = Button(self.sidebar, command=self.open_persona_studio,
+                                         relief="flat", pady=10)
+        self.persona_studio_btn.pack(fill="x", padx=12, pady=(0, 8))
+        self.vault_btn = Button(self.sidebar, command=self.open_vault_dialog,
+                                relief="flat", pady=10)
+        self.vault_btn.pack(fill="x", padx=12, pady=(0, 8))
+        self.arena_btn = Button(self.sidebar, command=self.open_arena_dialog,
+                                relief="flat", pady=10)
+        self.arena_btn.pack(fill="x", padx=12, pady=(0, 8))
+        self.language_btn = Button(self.sidebar, command=self.toggle_language,
+                                      relief="flat", pady=10)
+        self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
+        self.theme_btn = Button(self.sidebar, command=self.toggle_theme,
+                                   relief="flat", pady=10)
+        self.theme_btn.pack(fill="x", padx=12, pady=(0, 12))
+
+        self.content = tk.Frame(self.main)
+        self.content.pack(side="left", fill="both", expand=True)
+
+        self.header = tk.Frame(self.content, height=64)
+        self.header.pack(fill="x")
+        self.header.pack_propagate(False)
+        self.header_title = tk.Label(self.header, font=("Segoe UI", 15, "bold"),
+                                     anchor="w", padx=22)
+        self.header_title.pack(side="left", fill="y")
+        self.status = tk.Label(self.header, font=("Segoe UI", 9, "bold"),
+                               anchor="e", padx=18)
+        self.status.pack(side="right", fill="y")
+        self.export_btn = Button(self.header, command=self.open_export_dialog,
+                                 relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.export_btn.pack(side="right", padx=(0, 8), pady=14)
+        self.persona_header_btn = Button(self.header, command=self.show_persona_quick_menu,
+                                         relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.persona_header_btn.pack(side="right", padx=(0, 8), pady=14)
+        # Shown only while speech is playing (see poll_speech); packed after status, so it sits left of it.
+        self.stop_btn = Button(self.header, text="⏹  Stop", command=self.stop_speaking,
+                                  relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+
+        self.chat_area = tk.Frame(self.content)
+        self.chat_area.pack(fill="both", expand=True, padx=12, pady=12)
+        self.canvas = tk.Canvas(self.chat_area, highlightthickness=0)
+        self.scrollbar = tk.Scrollbar(self.chat_area, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.messages_frame = tk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.messages_frame, anchor="nw")
+        self.messages_frame.bind("<Configure>", self.on_frame_configure)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+        self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self.on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self.on_mousewheel)
+
+        self.bottom = tk.Frame(self.content)
+        self.bottom.pack(fill="x", padx=12, pady=(0, 12))
+
+        self.hud_container = tk.Frame(self.bottom)
+        self.waveform_hud = WaveformHUD(self.hud_container, on_cancel=self.cancel_dictation)
+        self.waveform_hud.pack(fill="x", expand=True)
+
+        self.input_row = tk.Frame(self.bottom)
+        self.input_row.pack(fill="x", expand=True)
+
+        self.input_box = tk.Text(self.input_row, height=2, wrap="word", font=("Segoe UI", 11),
+                                 relief="flat", padx=10, pady=10, undo=True)
+        self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.input_box.bind("<Control-Return>", self.send_message)
+        self.input_box.bind("<Return>", self.send_message)
+        self.input_box.bind("<Shift-Return>", lambda event: None)
+
+        self.mic_btn = Button(self.input_row, command=self.toggle_dictation,
+                              relief="flat", font=("Segoe UI", 10, "bold"), padx=14, pady=12)
+        self.mic_btn.pack(side="right", padx=(0, 8))
+        self.mic_btn.bind("<ButtonPress-1>", self.on_mic_btn_press)
+        self.mic_btn.bind("<ButtonRelease-1>", self.on_mic_btn_release)
+
+        self.send_btn = Button(self.input_row, command=self.send_message,
+                               relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
+        self.send_btn.pack(side="right")
+
+    def on_frame_configure(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self.canvas_window, width=event.width)
+        if event.width == self.canvas_width:
+            return
+        self.canvas_width = event.width
+        self.reflow_bubbles()
+
+
         self.root.after(250, self.warm_up)
         self.poll_speech()
         self.poll_stt()
@@ -524,9 +718,55 @@ class JugnuApp:
             else:
                 with open(HISTORY_FILE, "r", encoding="utf-8") as history_file:
                     data = json.load(history_file)
-        self.root.after(250, self.warm_up)
-        self.poll_speech()
-        self.poll_stt()
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        valid_chats = []
+        for chat in data:
+            if not isinstance(chat, dict):
+                continue
+            messages = chat.get("messages")
+            if not isinstance(messages, list):
+                continue
+            has_text = any(
+                isinstance(message, dict)
+                and message.get("role") in ("user", "assistant")
+                and isinstance(message.get("content"), str)
+                and message["content"].strip()
+                for message in messages
+            )
+            if has_text:
+                valid_chats.append(chat)
+
+        return valid_chats
+
+    def save_history(self):
+        """Save non-empty conversations atomically to avoid partial JSON files."""
+        saved_chats = [
+            chat for chat in self.chats
+            if isinstance(chat, dict)
+            and isinstance(chat.get("messages"), list)
+            and any(
+                isinstance(message, dict)
+                and message.get("role") in ("user", "assistant")
+                and isinstance(message.get("content"), str)
+                and message["content"].strip()
+                for message in chat["messages"]
+            )
+        ]
+
+        if getattr(self, "vault", None) and self.vault.is_vault_enabled():
+            if not self.vault.is_locked and self.vault.current_passphrase:
+                try:
+                    self.vault.save_chats(saved_chats)
+                except Exception as error:
+                    self.set_status("status_save_error", error=error)
+            return
+
+        core.save_history(HISTORY_FILE, saved_chats)
 
 def load_stylesheet(dark_mode):
     """The whole theme: dark.qss or light.qss, from beside this file."""
@@ -565,21 +805,38 @@ class InputBox(QPlainTextEdit):
     """The message box. Enter sends; Shift+Enter starts a new line."""
     submitted = Signal()
 
-        if getattr(self, "vault", None) and self.vault.is_vault_enabled():
-            if not self.vault.is_locked and self.vault.current_passphrase:
-                try:
-                    self.vault.save_chats(saved_chats)
-                except Exception as error:
-                    self.set_status("status_save_error", error=error)
-            return
-
-        history_path = os.path.abspath(HISTORY_FILE)
-        history_dir = os.path.dirname(history_path)
-        temp_path = None
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() & Qt.ShiftModifier:
             self.submitted.emit()
             return
+        if event.matches(QKeySequence.Paste):
+            try:
+                clipboard = QApplication.clipboard()
+                mime = clipboard.mimeData()
+                if mime and mime.hasImage():
+                    qimg = clipboard.image()
+                    if not qimg.isNull():
+                        from PySide6.QtCore import QBuffer, QIODevice
+                        buf = QBuffer()
+                        buf.open(QIODevice.WriteOnly)
+                        qimg.save(buf, "PNG")
+                        img_bytes = bytes(buf.data())
+                        buf.close()
+                        from multimodal import process_and_encode_image
+                        b64, (w, h) = process_and_encode_image(img_bytes)
+                        win = self.window()
+                        if hasattr(win, "attached_images"):
+                            idx = len(win.attached_images) + 1
+                            win.attached_images.append({
+                                "name": f"clipboard_image_{idx}.png",
+                                "base64": b64,
+                                "width": w,
+                                "height": h,
+                            })
+                            win.render_attachment_chips()
+                            return
+            except Exception:
+                pass
         super().keyPressEvent(event)
 
 
@@ -1107,6 +1364,7 @@ class JugnuWindow(QMainWindow):
                               voice_id=self.voice_id)  # Offline voice output; runs on its own thread.
         self.voice_dialog = None
         self.persona_manager = get_default_manager()
+        self.current_persona_id = "default"
         self.persona_dialog = None
         self.palette_dialog = None
         self.shortcuts_dialog = None
@@ -1119,6 +1377,7 @@ class JugnuWindow(QMainWindow):
         self.tasks = []  # background requests that are still running
         self.closed = False
         self.attachments: list[AttachedDocument] = []
+        self.attached_images: list[dict] = []
         self.current_model = self.load_model_setting()
 
         task_file = os.path.join(os.path.dirname(self.settings_file), core.TASKS_FILE) if os.path.dirname(self.settings_file) else core.TASKS_FILE
@@ -1135,193 +1394,7 @@ class JugnuWindow(QMainWindow):
         except Exception:
             self.tray_icon = None
 
-    def load_stt_prefs(self):
-        auto_punct = True
-        silence_detect = True
-        silence_timeout = DEFAULT_SILENCE_TIMEOUT
-        noise_suppress = True
-        hotkey = DEFAULT_HOTKEY
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if "stt_auto_punctuate" in data:
-                auto_punct = bool(data["stt_auto_punctuate"])
-            if "stt_silence_detection" in data:
-                silence_detect = bool(data["stt_silence_detection"])
-            if "stt_silence_timeout" in data and isinstance(data["stt_silence_timeout"], (int, float)):
-                silence_timeout = max(0.5, min(5.0, float(data["stt_silence_timeout"])))
-            if "stt_noise_suppression" in data:
-                noise_suppress = bool(data["stt_noise_suppression"])
-            if "stt_hotkey" in data and isinstance(data["stt_hotkey"], str) and data["stt_hotkey"].strip():
-                hotkey = data["stt_hotkey"].strip()
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            pass
-        return auto_punct, silence_detect, silence_timeout, noise_suppress, hotkey
 
-    def save_settings(self):
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump({
-                    "dark_mode": self.dark_mode,
-                    "voice_enabled": self.voice_enabled,
-                    "language": self.language,
-                    "voice_rate": self.voice_rate,
-                    "voice_volume": self.voice_volume,
-                    "voice_id": self.voice_id,
-                    "stt_auto_punctuate": getattr(self, "stt_auto_punctuate", True),
-                    "stt_silence_detection": getattr(self, "stt_silence_detection", True),
-                    "stt_silence_timeout": getattr(self, "stt_silence_timeout", DEFAULT_SILENCE_TIMEOUT),
-                    "stt_noise_suppression": getattr(self, "stt_noise_suppression", True),
-                    "stt_hotkey": getattr(self, "stt_hotkey", DEFAULT_HOTKEY),
-                }, f)
-        except OSError:
-            pass
-        self.build_ui()
-        if self.chats:
-            self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
-        else:
-            self.make_draft()
-        self.apply_theme()
-        self.apply_language()
-
-        self.resize_timer = QTimer(self, singleShot=True, interval=60)
-        self.resize_timer.timeout.connect(self.fit_bubbles)
-        self.speech_timer = QTimer(self, interval=200)
-        self.speech_timer.timeout.connect(self.poll_speech)
-        self.speech_timer.start()
-        QTimer.singleShot(250, self, self.warm_up)
-
-    # ---------- Layout ----------
-    def build_ui(self):
-        # Visible text is filled in by apply_language(), so it can be switched at runtime.
-        self.main = tk.Frame(self.root)
-        self.main.pack(fill="both", expand=True)
-
-        self.sidebar = tk.Frame(self.main, width=230)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-
-        self.brand = tk.Label(self.sidebar, text="🤖  JUGNU", font=("Segoe UI", 22, "bold"),
-                              anchor="w", padx=18, pady=18)
-        self.brand.pack(fill="x")
-        self.tagline = tk.Label(self.sidebar, text="Just an Unusually Genius\nNeural Utility",
-                                font=("Segoe UI", 9), justify="left", anchor="w", padx=20)
-        self.tagline.pack(fill="x", pady=(0, 18))
-
-        self.new_btn = Button(self.sidebar, command=self.new_chat,
-                                 font=("Segoe UI", 10, "bold"), relief="flat", pady=12)
-        self.new_btn.pack(fill="x", padx=12, pady=(0, 18))
-
-        self.history_label = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"),
-                                      anchor="w", padx=18)
-        self.history_label.pack(fill="x")
-
-        self.history_list = tk.Listbox(self.sidebar, relief="flat", borderwidth=0,
-                                       font=("Segoe UI", 9), activestyle="none")
-        self.history_list.pack(fill="both", expand=True, padx=8, pady=8)
-        self.history_list.bind("<<ListboxSelect>>", self.select_chat)
-        self.history_list.bind("<Button-3>", self.show_chat_menu)  # right-click (Windows / Linux)
-        self.history_list.bind("<Button-2>", self.show_chat_menu)  # right-click (macOS)
-
-        self.clear_btn = Button(self.sidebar, command=self.clear_chat,
-                                   relief="flat", pady=10)
-        self.clear_btn.pack(fill="x", padx=12, pady=(4, 8))
-        self.voice_btn = Button(self.sidebar, command=self.toggle_voice,
-                                   relief="flat", pady=10)
-        self.voice_btn.pack(fill="x", padx=12, pady=(0, 8))
-        if not self.tts.available:
-            self.voice_btn.configure(state="disabled")  # pyttsx3 not installed
-        self.voice_settings_btn = Button(self.sidebar, command=self.open_voice_settings,
-                                            relief="flat", pady=10)
-        self.voice_settings_btn.pack(fill="x", padx=12, pady=(0, 8))
-        if not (self.tts.available or self.stt.has_mic or self.stt.has_recognizer):
-            self.voice_settings_btn.configure(state="disabled")
-        self.persona_studio_btn = Button(self.sidebar, command=self.open_persona_studio,
-                                         relief="flat", pady=10)
-        self.persona_studio_btn.pack(fill="x", padx=12, pady=(0, 8))
-        self.vault_btn = Button(self.sidebar, command=self.open_vault_dialog,
-                                relief="flat", pady=10)
-        self.vault_btn.pack(fill="x", padx=12, pady=(0, 8))
-        self.arena_btn = Button(self.sidebar, command=self.open_arena_dialog,
-                                relief="flat", pady=10)
-        self.arena_btn.pack(fill="x", padx=12, pady=(0, 8))
-        self.language_btn = Button(self.sidebar, command=self.toggle_language,
-                                      relief="flat", pady=10)
-        self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
-        self.theme_btn = Button(self.sidebar, command=self.toggle_theme,
-                                   relief="flat", pady=10)
-        self.theme_btn.pack(fill="x", padx=12, pady=(0, 12))
-
-        self.content = tk.Frame(self.main)
-        self.content.pack(side="left", fill="both", expand=True)
-
-        self.header = tk.Frame(self.content, height=64)
-        self.header.pack(fill="x")
-        self.header.pack_propagate(False)
-        self.header_title = tk.Label(self.header, font=("Segoe UI", 15, "bold"),
-                                     anchor="w", padx=22)
-        self.header_title.pack(side="left", fill="y")
-        self.status = tk.Label(self.header, font=("Segoe UI", 9, "bold"),
-                               anchor="e", padx=18)
-        self.status.pack(side="right", fill="y")
-        self.export_btn = Button(self.header, command=self.open_export_dialog,
-                                 relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
-        self.export_btn.pack(side="right", padx=(0, 8), pady=14)
-        self.persona_header_btn = Button(self.header, command=self.show_persona_quick_menu,
-                                         relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
-        self.persona_header_btn.pack(side="right", padx=(0, 8), pady=14)
-        # Shown only while speech is playing (see poll_speech); packed after status, so it sits left of it.
-        self.stop_btn = Button(self.header, text="⏹  Stop", command=self.stop_speaking,
-                                  relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
-
-        self.chat_area = tk.Frame(self.content)
-        self.chat_area.pack(fill="both", expand=True, padx=12, pady=12)
-        self.canvas = tk.Canvas(self.chat_area, highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(self.chat_area, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.messages_frame = tk.Frame(self.canvas)
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.messages_frame, anchor="nw")
-        self.messages_frame.bind("<Configure>", self.on_frame_configure)
-        self.canvas.bind("<Configure>", self.on_canvas_configure)
-        self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.canvas.bind_all("<Button-4>", self.on_mousewheel)
-        self.canvas.bind_all("<Button-5>", self.on_mousewheel)
-
-        self.bottom = tk.Frame(self.content)
-        self.bottom.pack(fill="x", padx=12, pady=(0, 12))
-
-        self.hud_container = tk.Frame(self.bottom)
-        self.waveform_hud = WaveformHUD(self.hud_container, on_cancel=self.cancel_dictation)
-        self.waveform_hud.pack(fill="x", expand=True)
-
-        self.input_row = tk.Frame(self.bottom)
-        self.input_row.pack(fill="x", expand=True)
-
-        self.input_box = tk.Text(self.input_row, height=2, wrap="word", font=("Segoe UI", 11),
-                                 relief="flat", padx=10, pady=10, undo=True)
-        self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.input_box.bind("<Control-Return>", self.send_message)
-        self.input_box.bind("<Return>", self.send_message)
-        self.input_box.bind("<Shift-Return>", lambda event: None)
-
-        self.mic_btn = Button(self.input_row, command=self.toggle_dictation,
-                              relief="flat", font=("Segoe UI", 10, "bold"), padx=14, pady=12)
-        self.mic_btn.pack(side="right", padx=(0, 8))
-        self.mic_btn.bind("<ButtonPress-1>", self.on_mic_btn_press)
-        self.mic_btn.bind("<ButtonRelease-1>", self.on_mic_btn_release)
-
-        self.send_btn = Button(self.input_row, command=self.send_message,
-                               relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
-        self.send_btn.pack(side="right")
-
-    def on_frame_configure(self, _event=None):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def on_canvas_configure(self, event):
-        self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        if event.width == self.canvas_width:
         root = QWidget()
         self.setCentralWidget(root)
         main = QHBoxLayout(root)
@@ -1442,8 +1515,16 @@ class JugnuWindow(QMainWindow):
         self.attach_btn.setObjectName("attachBtn")
         self.attach_btn.setCursor(Qt.PointingHandCursor)
         self.attach_btn.setFixedSize(48, 48)
+        self.attach_btn.setToolTip("Attach Document / Code File")
         self.attach_btn.clicked.connect(self.pick_attachments)
         bottom.addWidget(self.attach_btn)
+        self.img_attach_btn = QPushButton("📷")
+        self.img_attach_btn.setObjectName("imgAttachBtn")
+        self.img_attach_btn.setCursor(Qt.PointingHandCursor)
+        self.img_attach_btn.setFixedSize(48, 48)
+        self.img_attach_btn.setToolTip("Attach Image (*.png, *.jpg, *.jpeg, *.webp)")
+        self.img_attach_btn.clicked.connect(self.pick_image_attachments)
+        bottom.addWidget(self.img_attach_btn)
         self.input_box = InputBox()
         self.input_box.setFixedHeight(64)
         self.input_box.submitted.connect(self.send_message)
@@ -1715,11 +1796,6 @@ class JugnuWindow(QMainWindow):
                                     selectbackground=c["accent"], selectforeground="white")
         for btn in [self.new_btn, self.theme_btn, self.voice_btn, self.language_btn,
                     self.voice_settings_btn, self.persona_studio_btn, self.vault_btn, self.arena_btn]:
-                    self.voice_settings_btn, self.persona_studio_btn]:
-        self.history_list.configure(bg=c["sidebar"], fg=c["text"],
-                                    selectbackground=c["accent"], selectforeground="white")
-        for btn in [self.new_btn, self.theme_btn, self.voice_btn, self.language_btn,
-                    self.voice_settings_btn]:
             btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
                           activeforeground="white", cursor="hand2")
         self.voice_btn.configure(text=self.voice_button_text())
@@ -2354,11 +2430,6 @@ class JugnuWindow(QMainWindow):
             else:
                 self.history_label.setText(self.t("search_no_matches"))
 
-    def make_draft(self):
-        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": [],
-                           "persona_id": self.current_persona_id}
-        self.current_id = self.draft_chat["id"]
-        self.update_persona_ui()
         for chat in chats_to_show:  # newest first or ranked by search
             item = QListWidgetItem(core.list_title(chat.get("title", core.NEW_CHAT_TITLE)))
             item.setData(Qt.UserRole, chat["id"])
@@ -2367,6 +2438,18 @@ class JugnuWindow(QMainWindow):
             if chat["id"] == self.current_id:
                 item.setSelected(True)
                 self.history_list.setCurrentItem(item)
+
+    def make_draft(self):
+        persona_id = getattr(self, "current_persona_id", None)
+        if not persona_id and hasattr(self, "current_persona"):
+            p = self.current_persona()
+            persona_id = getattr(p, "id", "default")
+        persona_id = persona_id or "default"
+        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": [],
+                           "persona_id": persona_id}
+        self.current_id = self.draft_chat["id"]
+        if hasattr(self, "update_persona_ui"):
+            self.update_persona_ui()
 
     def new_chat(self):
         # A blank chat is temporary. It must not create a history entry until a message is sent.
@@ -3902,6 +3985,43 @@ class JugnuWindow(QMainWindow):
                 QMessageBox.warning(self, self.t("attach_error_title"), str(err))
         self.render_attachment_chips()
 
+    def pick_image_attachments(self):
+        try:
+            from multimodal import validate_image_path, process_and_encode_image
+        except ImportError:
+            return
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach Images",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp);;All Files (*)",
+        )
+        if not file_paths:
+            return
+        for path in file_paths:
+            if not validate_image_path(path):
+                continue
+            try:
+                b64, (w, h) = process_and_encode_image(path)
+                name = os.path.basename(path)
+                if not hasattr(self, "attached_images"):
+                    self.attached_images = []
+                self.attached_images.append({
+                    "name": name,
+                    "path": path,
+                    "base64": b64,
+                    "width": w,
+                    "height": h,
+                })
+            except Exception as e:
+                QMessageBox.warning(self, "Image Error", f"Could not process image: {e}")
+        self.render_attachment_chips()
+
+    def remove_image_attachment(self, index):
+        if hasattr(self, "attached_images") and 0 <= index < len(self.attached_images):
+            del self.attached_images[index]
+        self.render_attachment_chips()
+
     def remove_attachment(self, index):
         if 0 <= index < len(self.attachments):
             del self.attachments[index]
@@ -3914,30 +4034,54 @@ class JugnuWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
-        if not self.attachments:
+        has_docs = bool(getattr(self, "attachments", None))
+        has_imgs = bool(getattr(self, "attached_images", None))
+
+        if not has_docs and not has_imgs:
             self.attachments_container.setVisible(False)
             return
 
         self.attachments_container.setVisible(True)
-        for idx, doc in enumerate(self.attachments):
-            chip = QFrame()
-            chip.setObjectName("attachmentChip")
-            chip_layout = QHBoxLayout(chip)
-            chip_layout.setContentsMargins(8, 4, 8, 4)
-            chip_layout.setSpacing(6)
+        if has_docs:
+            for idx, doc in enumerate(self.attachments):
+                chip = QFrame()
+                chip.setObjectName("attachmentChip")
+                chip_layout = QHBoxLayout(chip)
+                chip_layout.setContentsMargins(8, 4, 8, 4)
+                chip_layout.setSpacing(6)
 
-            trunc_tag = " (truncated)" if doc.is_truncated else ""
-            label = QLabel(f"📄 {doc.filename} ({doc.formatted_size}){trunc_tag}")
-            chip_layout.addWidget(label)
+                trunc_tag = " (truncated)" if doc.is_truncated else ""
+                label = QLabel(f"📄 {doc.filename} ({doc.formatted_size}){trunc_tag}")
+                chip_layout.addWidget(label)
 
-            del_btn = QPushButton("✕")
-            del_btn.setFixedSize(18, 18)
-            del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setToolTip("Remove attachment")
-            del_btn.clicked.connect(lambda checked=False, i=idx: self.remove_attachment(i))
-            chip_layout.addWidget(del_btn)
+                del_btn = QPushButton("✕")
+                del_btn.setFixedSize(18, 18)
+                del_btn.setCursor(Qt.PointingHandCursor)
+                del_btn.setToolTip("Remove attachment")
+                del_btn.clicked.connect(lambda checked=False, i=idx: self.remove_attachment(i))
+                chip_layout.addWidget(del_btn)
 
-            self.attachments_layout.addWidget(chip)
+                self.attachments_layout.addWidget(chip)
+
+        if has_imgs:
+            for idx, img in enumerate(self.attached_images):
+                chip = QFrame()
+                chip.setObjectName("attachmentChip")
+                chip_layout = QHBoxLayout(chip)
+                chip_layout.setContentsMargins(8, 4, 8, 4)
+                chip_layout.setSpacing(6)
+
+                label = QLabel(f"📷 {img['name']} ({img.get('width', 0)}x{img.get('height', 0)})")
+                chip_layout.addWidget(label)
+
+                del_btn = QPushButton("✕")
+                del_btn.setFixedSize(18, 18)
+                del_btn.setCursor(Qt.PointingHandCursor)
+                del_btn.setToolTip("Remove image")
+                del_btn.clicked.connect(lambda checked=False, i=idx: self.remove_image_attachment(i))
+                chip_layout.addWidget(del_btn)
+
+                self.attachments_layout.addWidget(chip)
 
         self.attachments_layout.addStretch(1)
 
@@ -3945,8 +4089,9 @@ class JugnuWindow(QMainWindow):
         if self.busy:
             return
         user_text = self.input_box.toPlainText().strip()
-        has_attachments = bool(self.attachments)
-        if not user_text and not has_attachments:
+        has_attachments = bool(getattr(self, "attachments", None))
+        has_images = bool(getattr(self, "attached_images", None))
+        if not user_text and not has_attachments and not has_images:
             return
         self.tts.stop()  # A new message interrupts any reply still being read aloud.
         chat = self.current_chat()
@@ -3961,9 +4106,12 @@ class JugnuWindow(QMainWindow):
                 chat["title"] = user_text[:core.MAX_LIST_TITLE]
             elif user_text:
                 chat["title"] = generate_heuristic_title(user_text)
+            elif has_attachments:
+                chat["title"] = f"Attachment: {self.attachments[0].filename}"[:core.MAX_LIST_TITLE]
+            elif has_images:
+                chat["title"] = f"Image: {self.attached_images[0]['name']}"[:core.MAX_LIST_TITLE]
             else:
-                default_title = f"Attachment: {self.attachments[0].filename}" if self.attachments else "Chat"
-                chat["title"] = default_title[:core.MAX_LIST_TITLE]
+                chat["title"] = "Chat"[:core.MAX_LIST_TITLE]
         time_now = core.message_time_text()
 
         prompt_with_attachments = (
@@ -3972,9 +4120,13 @@ class JugnuWindow(QMainWindow):
             else user_text
         )
         self.attachments = []
+        user_msg = {"role": "user", "content": prompt_with_attachments, "time": time_now}
+        if has_images:
+            user_msg["images"] = [img["base64"] for img in self.attached_images]
+            self.attached_images = []
         self.render_attachment_chips()
 
-        chat["messages"].append({"role": "user", "content": prompt_with_attachments, "time": time_now})
+        chat["messages"].append(user_msg)
         self.input_box.clear()
         self.add_bubble("user", prompt_with_attachments, timestamp=time_now)
         self.scroll_to_bottom()
@@ -4160,33 +4312,6 @@ class JugnuWindow(QMainWindow):
                 self.refresh_history_list()
             return
 
-    def send_message(self, _event=None):
-        if self.busy:
-            return "break"
-        user_text = self.input_box.get("1.0", "end").strip()
-        if not user_text:
-            return "break"
-        if self.stt.is_listening:
-            self.stt.cancel_listening()
-        self.tts.stop()  # A new message interrupts any reply still being read aloud.
-        chat = self.current_chat()
-        if not chat:
-            self.make_draft()
-            chat = self.current_chat()
-        if self.draft_chat and chat.get("id") == self.draft_chat.get("id"):
-            self.chats.append(self.draft_chat)
-            self.draft_chat = None
-        if chat.get("title") == "New Chat":
-            chat["title"] = user_text[:34]
-        time_now = message_time_text()
-        chat["messages"].append({"role": "user", "content": user_text, "time": time_now})
-        self.input_box.delete("1.0", "end")
-        self.add_bubble("user", user_text, timestamp=time_now)
-        self.refresh_history_list()
-        self.save_history()
-        self.busy = True
-        self.send_btn.configure(state="disabled")
-        self.set_status("status_thinking")
         # Case 2: Generated tokens present (completed normally, stopped, or partial before error)
         final_text = accumulated_text.strip()
         if final_text and chat:
@@ -4386,7 +4511,8 @@ class JugnuWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.closed = True
-        self.speech_timer.stop()
+        if hasattr(self, "speech_timer") and self.speech_timer:
+            self.speech_timer.stop()
         self.tts.shutdown()
         if hasattr(self, "scheduler") and self.scheduler:
             self.scheduler.stop(timeout=1.0)

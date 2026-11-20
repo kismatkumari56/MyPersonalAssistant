@@ -6,6 +6,7 @@ calculator and the request to Ollama) comes from core.py.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 
 from core import (
@@ -92,7 +93,24 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message, persona=None, model=None, attachments=None):
+def ask_ai(user_message, persona=None, model=None, attachments=None, images=None):
+    encoded_images = []
+    if images:
+        try:
+            from multimodal import check_vision_compatibility, process_and_encode_image
+            for img in images:
+                if isinstance(img, str) and not img.startswith("data:") and len(img) < 1024 and os.path.exists(img):
+                    b64, _ = process_and_encode_image(img)
+                    encoded_images.append(b64)
+                else:
+                    encoded_images.append(img)
+            active_model = model or getattr(core, "MODEL", "llama3.2")
+            advisory = check_vision_compatibility(active_model, has_images=True)
+            if advisory:
+                return advisory
+        except ImportError:
+            pass
+
     if isinstance(persona, str):
         persona = get_persona(persona)
     system_prompt = (persona.system_prompt + "\n\n") if persona and getattr(persona, "system_prompt", None) else SYSTEM_PROMPT
@@ -102,8 +120,12 @@ def ask_ai(user_message, persona=None, model=None, attachments=None):
         if attachments
         else user_message
     )
+    user_msg_dict = {"role": "user", "content": prompt_text}
+    if encoded_images:
+        user_msg_dict["images"] = encoded_images
+
     result = chat(
-        build_messages(system_prompt, [{"role": "user", "content": prompt_text}]),
+        build_messages(system_prompt, [user_msg_dict]),
         model=model,
         options=options,
     )

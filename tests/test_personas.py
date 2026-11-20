@@ -9,6 +9,7 @@ from personas import (
     Persona,
     PersonaManager,
     VALID_CATEGORIES,
+)
 """Comprehensive automated tests for Customizable Assistant Personas (#47)."""
 
 import json

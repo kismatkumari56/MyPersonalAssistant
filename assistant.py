@@ -26,6 +26,7 @@ from context_ingest import (
     ingest_file,
 )
 from export_manager import export_chat
+from extensions import get_extension_manager
 from models import (
     DEFAULT_MODEL,
     fetch_local_models,
@@ -184,8 +185,9 @@ def show_help():
     print("14. /schedule            - Manage proactive background tasks and cron jobs")
     print("15. /shortcuts, /palette - View global keyboard shortcuts")
     print("16. /stats               - Show session inference performance analytics")
-    print("17. help                 - Show available commands")
-    print("18. bye                  - Exit the assistant")
+    print("17. /todo, /scratch, /digest - Local offline extensions & slash commands")
+    print("18. help                 - Show available commands")
+    print("19. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -470,6 +472,12 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
                     print(f"\nAssistant: Deleted scheduled task [{task.id}] '{task.title}'.")
             else:
                 print(f"\nAssistant: Unknown schedule action '{subcmd}'. Available: list, add, run, toggle, delete.")
+
+# Local offline extensions and slash commands (e.g. /todo, /scratch, /digest)
+        elif get_extension_manager().is_slash_command(user_input):
+            reply = get_extension_manager().handle_command(user_input, context={"messages": []})
+            if reply is not None:
+                print(f"\nAssistant:\n{reply}")
 
         # Performance analytics
         elif command in ["/stats", "/analytics", "/metrics"]:

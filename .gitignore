@@ -1,12 +1,14 @@
-
-# Python cache
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 .pytest_cache/
 
-# Virtual environment
-venv/
+# Virtual environments
 .venv/
+venv/
+env/
 
 # Local chat history and settings
 jugnu_history.json
@@ -15,12 +17,23 @@ jugnu_history.enc
 jugnu_history.enc.*
 jugnu_settings.json
 jugnu_personas.json
+jugnu_tasks.json
+jugnu_memory.json
+jugnu_rag_index.json
+jugnu_*.json.tmp
 backups/
 
 # Environment variables / secrets
 .env
 .env.*
+!.env.example
 
-# Local editor files
+# IDE configurations
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

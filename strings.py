@@ -227,14 +227,28 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Branching and Checkpoints
+                "branch_pagination": "{current} / {total}",
+                "branch_prev_tooltip": "Previous response branch",
+                "branch_next_tooltip": "Next response branch",
+                "regen_btn": "🔄",
+                "regen_tooltip": "Regenerate alternative response",
+                "edit_prompt_btn": "✏️",
+                "edit_prompt_tooltip": "Edit prompt and branch conversation",
+                "edit_dialog_title": "Edit Prompt",
+                "edit_dialog_prompt": "Modify your message to create an alternative branch:",
+                "fork_btn": "⑂ Fork",
+                "fork_tooltip": "Fork chat into a new conversation from here",
+                "fork_success_title": "Chat Forked",
+                "fork_success_msg": "Forked conversation created: {title}",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Details",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Total Response Time",
-        "hud_ttft": "Time to First Token (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
+                "hud_dialog_title": "Inference Performance Details",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Total Response Time",
+                "hud_ttft": "Time to First Token (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -514,14 +528,28 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Branching and Checkpoints
+                "branch_pagination": "{current} / {total}",
+                "branch_prev_tooltip": "Pichhla response branch",
+                "branch_next_tooltip": "Agla response branch",
+                "regen_btn": "🔄",
+                "regen_tooltip": "Alternative response generate karein",
+                "edit_prompt_btn": "✏️",
+                "edit_prompt_tooltip": "Prompt edit karke nayi branch banayein",
+                "edit_dialog_title": "Prompt Edit Karein",
+                "edit_dialog_prompt": "Nayi branch banane ke liye message badlein:",
+                "fork_btn": "⑂ Fork",
+                "fork_tooltip": "Yahan se nayi chat fork karein",
+                "fork_success_title": "Chat Fork Ho Gayi",
+                "fork_success_msg": "Nayi forked chat ban gayi: {title}",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Jankari",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Kul Response Samay",
-        "hud_ttft": "Pahla Token Samay (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
+                "hud_dialog_title": "Inference Performance Jankari",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Kul Response Samay",
+                "hud_ttft": "Pahla Token Samay (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -631,13 +659,14 @@ def get_string(language, key, **kwargs):
     return text
 
 
-def build_system_prompt(language, now_text, persona_prompt=None):
+def build_system_prompt(language, now_text, persona=None, persona_prompt=None):
     """System prompt for the model: persona, reply-language rule, and the clock."""
-    intro = (persona_prompt.strip() + " ") if persona_prompt else SYSTEM_PROMPT_INTRO
-def build_system_prompt(language, now_text, persona=None):
-    """System prompt for the model: persona, reply-language rule, and the clock."""
-    if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
+    if persona_prompt:
+        intro = persona_prompt.strip() + " "
+    elif persona and hasattr(persona, "system_prompt") and persona.system_prompt:
         intro = persona.system_prompt.strip() + " "
+    elif isinstance(persona, str) and persona.strip():
+        intro = persona.strip() + " "
     else:
         intro = SYSTEM_PROMPT_INTRO
     return (intro

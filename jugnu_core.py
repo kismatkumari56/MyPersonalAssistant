@@ -124,6 +124,8 @@ def load_history(path=HISTORY_FILE):
                     msg_dict["time"] = time_val.strip()
                 if role == "assistant" and message.get("is_error") is True:
                     msg_dict["is_error"] = True
+                if message.get("node_id"):
+                    msg_dict["node_id"] = str(message["node_id"])
                 if role == "assistant" and isinstance(message.get("metrics"), dict):
                     msg_dict["metrics"] = message["metrics"]
 
@@ -134,6 +136,8 @@ def load_history(path=HISTORY_FILE):
                 continue
 
             chat["messages"] = valid_messages
+            if "tree" in chat and isinstance(chat["tree"], dict):
+                chat["tree"] = chat["tree"]
             if chat.get("is_custom_title"):
                 chat["is_custom_title"] = True
             title = chat.get("title")

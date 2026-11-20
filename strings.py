@@ -227,14 +227,19 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Memory Manager
+                "memory_btn": "🧠  Memory",
+                "memory_dialog_title": "User Memory & Preference Manager",
+                "memory_enabled": "Enable Persistent Memory",
+                "memory_clear_confirm": "Are you sure you want to delete all memory facts?",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Details",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Total Response Time",
-        "hud_ttft": "Time to First Token (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
+                "hud_dialog_title": "Inference Performance Details",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Total Response Time",
+                "hud_ttft": "Time to First Token (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -514,14 +519,19 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Memory Manager
+                "memory_btn": "🧠  Yaadein",
+                "memory_dialog_title": "User Memory aur Pasand Manager",
+                "memory_enabled": "Persistent Memory Chalu Rakhein",
+                "memory_clear_confirm": "Kya aap sach me saari yaadein mitana chahte hain?",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Jankari",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Kul Response Samay",
-        "hud_ttft": "Pahla Token Samay (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
+                "hud_dialog_title": "Inference Performance Jankari",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Kul Response Samay",
+                "hud_ttft": "Pahla Token Samay (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -631,13 +641,14 @@ def get_string(language, key, **kwargs):
     return text
 
 
-def build_system_prompt(language, now_text, persona_prompt=None):
+def build_system_prompt(language, now_text, persona=None, persona_prompt=None):
     """System prompt for the model: persona, reply-language rule, and the clock."""
-    intro = (persona_prompt.strip() + " ") if persona_prompt else SYSTEM_PROMPT_INTRO
-def build_system_prompt(language, now_text, persona=None):
-    """System prompt for the model: persona, reply-language rule, and the clock."""
-    if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
+    if persona_prompt:
+        intro = persona_prompt.strip() + " "
+    elif persona and hasattr(persona, "system_prompt") and persona.system_prompt:
         intro = persona.system_prompt.strip() + " "
+    elif isinstance(persona, str) and persona.strip():
+        intro = persona.strip() + " "
     else:
         intro = SYSTEM_PROMPT_INTRO
     return (intro

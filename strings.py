@@ -227,14 +227,30 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Knowledge Base & RAG
+                "kb_btn": "📚  Knowledge",
+                "kb_dialog_title": "Knowledge Base Studio (RAG)",
+                "kb_header": "📚 Local Knowledge Base & RAG Engine",
+                "kb_subhead": "Index local files and directories for zero-latency, private, hybrid semantic retrieval.",
+                "kb_indexed_files": "<b>Indexed Documents:</b>",
+                "kb_add_file": "+ Add File",
+                "kb_add_folder": "+ Add Folder",
+                "kb_remove_btn": "Remove",
+                "kb_clear_all": "Clear Index",
+                "kb_query_tester": "<b>Hybrid Search Tester:</b>",
+                "kb_test_placeholder": "Enter a query to test retrieval...",
+                "kb_search_btn": "Search",
+                "kb_results_placeholder": "Retrieved chunks with BM25, Cosine, and RRF scores will appear here.",
+                "kb_select_file": "Select Document to Index",
+                "kb_select_folder": "Select Folder to Index",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Details",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Total Response Time",
-        "hud_ttft": "Time to First Token (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
+                "hud_dialog_title": "Inference Performance Details",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Total Response Time",
+                "hud_ttft": "Time to First Token (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Click to inspect latency and throughput metrics",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -514,14 +530,30 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Knowledge Base & RAG
+                "kb_btn": "📚  Knowledge",
+                "kb_dialog_title": "Knowledge Base Studio (RAG)",
+                "kb_header": "📚 Local Knowledge Base aur RAG Engine",
+                "kb_subhead": "Local files aur folders ko private hybrid semantic search ke liye index karein.",
+                "kb_indexed_files": "<b>Index Kiye Gaye Documents:</b>",
+                "kb_add_file": "+ File Jodein",
+                "kb_add_folder": "+ Folder Jodein",
+                "kb_remove_btn": "Hatayein",
+                "kb_clear_all": "Index Saaf Karein",
+                "kb_query_tester": "<b>Hybrid Search Tester:</b>",
+                "kb_test_placeholder": "Retrieval test karne ke liye query daalein...",
+                "kb_search_btn": "Search",
+                "kb_results_placeholder": "BM25, Cosine aur RRF scores wale chunks yahan dikhenge.",
+                "kb_select_file": "Index karne ke liye document chunein",
+                "kb_select_folder": "Index karne ke liye folder chunein",
         # Analytics and HUD
-        "hud_dialog_title": "Inference Performance Jankari",
-        "hud_speed": "Generation Speed",
-        "hud_tokens": "Tokens Generated",
-        "hud_total_time": "Kul Response Samay",
-        "hud_ttft": "Pahla Token Samay (TTFT)",
-        "hud_model": "Model",
-        "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
+                "hud_dialog_title": "Inference Performance Jankari",
+                "hud_speed": "Generation Speed",
+                "hud_tokens": "Tokens Generated",
+                "hud_total_time": "Kul Response Samay",
+                "hud_ttft": "Pahla Token Samay (TTFT)",
+                "hud_model": "Model",
+                "hud_badge_tooltip": "Latency aur throughput metrics dekhne ke liye click karein",
         # Command Palette and Shortcuts
         "command_palette_btn": "⌘  Command Palette (Ctrl+K)",
         "command_palette_title": "Command Palette",
@@ -631,13 +663,14 @@ def get_string(language, key, **kwargs):
     return text
 
 
-def build_system_prompt(language, now_text, persona_prompt=None):
+def build_system_prompt(language, now_text, persona=None, persona_prompt=None):
     """System prompt for the model: persona, reply-language rule, and the clock."""
-    intro = (persona_prompt.strip() + " ") if persona_prompt else SYSTEM_PROMPT_INTRO
-def build_system_prompt(language, now_text, persona=None):
-    """System prompt for the model: persona, reply-language rule, and the clock."""
-    if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
+    if persona_prompt:
+        intro = persona_prompt.strip() + " "
+    elif persona and hasattr(persona, "system_prompt") and persona.system_prompt:
         intro = persona.system_prompt.strip() + " "
+    elif isinstance(persona, str) and persona.strip():
+        intro = persona.strip() + " "
     else:
         intro = SYSTEM_PROMPT_INTRO
     return (intro

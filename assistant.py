@@ -33,6 +33,7 @@ from models import (
     format_bytes,
     resolve_active_model,
 )
+from extensions import get_extension_manager
 from personas import get_persona, list_personas
 from scheduler import CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
@@ -193,21 +194,10 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /models               - List installed Ollama models")
-    print("5. /model <name>         - Switch active Ollama model")
-    print("6. personas              - List all available assistant personas")
-    print("7. persona <name>        - Switch active persona (e.g. persona code)")
-    print("8. /attach <path>        - Attach a local code or text file")
-    print("9. /files                - List attached files")
-    print("10. /detach              - Clear all attachments")
-    print("11. /search <query>      - Search across conversation history")
-    print("12. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("13. /chats               - List all saved conversation history")
-    print("14. /schedule            - Manage proactive background tasks and cron jobs")
-    print("15. /shortcuts, /palette - View global keyboard shortcuts")
     print("16. /stats               - Show session inference performance analytics")
-    print("17. help                 - Show available commands")
-    print("18. bye                  - Exit the assistant")
+    print("17. /todo, /scratch, /digest - Local offline extensions & slash commands")
+    print("18. help                 - Show available commands")
+    print("19. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -496,6 +486,12 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
         # Performance analytics
         elif command in ["/stats", "/analytics", "/metrics"]:
             print(f"\nAssistant: {session_analytics.summary()}")
+
+        # Local offline extensions and slash commands (e.g. /todo, /scratch, /digest)
+        elif get_extension_manager().is_slash_command(user_input):
+            reply = get_extension_manager().handle_command(user_input, context={"messages": []})
+            if reply is not None:
+                print(f"\nAssistant:\n{reply}")
 
         # General AI question
         else:

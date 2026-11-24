@@ -229,6 +229,8 @@ class FlatButton(tk.Label):
         widget._pressed = False
 
 from export_manager import export_chat
+from extensions import ExtensionManager, get_extension_manager
+from extensions_dialog import ExtensionsManagerDialog
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
 from models import (
@@ -1387,6 +1389,9 @@ class JugnuWindow(QMainWindow):
         self.scheduler.start()
         self.automation_dialog = None
         self.tray_icon = None
+        ext_dir = os.path.dirname(self.settings_file) if os.path.dirname(self.settings_file) else os.getcwd()
+        self.extension_manager = get_extension_manager(ext_dir)
+        self.extensions_dialog = None
         try:
             if QSystemTrayIcon.isSystemTrayAvailable():
                 self.tray_icon = JugnuTrayIcon(self, self.scheduler)
@@ -1472,6 +1477,12 @@ class JugnuWindow(QMainWindow):
         self.auto_btn.clicked.connect(self.open_automation_dialog)
         head.addWidget(self.auto_btn)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.open_automation_dialog)
+
+        self.ext_btn = QPushButton("⚡ Extensions", objectName="extBtn")
+        self.ext_btn.setCursor(Qt.PointingHandCursor)
+        self.ext_btn.clicked.connect(self.open_extensions_dialog)
+        head.addWidget(self.ext_btn)
+        QShortcut(QKeySequence("Ctrl+Shift+E"), self, self.open_extensions_dialog)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
         self.stop_btn.setProperty("variant", "stop")
@@ -1853,6 +1864,7 @@ class JugnuWindow(QMainWindow):
         self.theme_btn.setText(self.theme_button_text())
         self.header_title.setText(self.t("header_title"))
         self.auto_btn.setText(self.t("auto_btn"))
+        self.ext_btn.setText(self.t("ext_btn"))
         self.send_btn.setText(self.t("send_btn"))
         if hasattr(self, "attach_btn"):
             self.attach_btn.setToolTip(self.t("attach_file_btn"))
@@ -2156,6 +2168,14 @@ class JugnuWindow(QMainWindow):
         self.automation_dialog.show()
         self.automation_dialog.raise_()
         self.automation_dialog.activateWindow()
+
+    def open_extensions_dialog(self):
+        if getattr(self, "extensions_dialog", None) is None:
+            self.extensions_dialog = ExtensionsManagerDialog(self, self.extension_manager)
+        self.extensions_dialog.populate_cards()
+        self.extensions_dialog.show()
+        self.extensions_dialog.raise_()
+        self.extensions_dialog.activateWindow()
 
     def restore_from_tray(self):
         """Restore window when triggered from system tray."""
@@ -4141,6 +4161,20 @@ class JugnuWindow(QMainWindow):
             answer = core.local_answer(user_text, self.language)
             if answer is not None:
                 self.finish_answer(chat["id"], answer, False)
+                return
+
+        # Local offline extensions and custom slash commands (e.g. /todo, /scratch, /digest)
+        if hasattr(self, "extension_manager") and self.extension_manager.is_slash_command(user_text):
+            ext_reply = self.extension_manager.handle_command(
+                user_text,
+                context={
+                    "chat_id": chat["id"],
+                    "title": chat.get("title", ""),
+                    "messages": chat.get("messages", []),
+                },
+            )
+            if ext_reply is not None:
+                self.finish_answer(chat["id"], ext_reply, False)
                 return
         self.ask_ollama(chat["id"])
 

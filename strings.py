@@ -286,6 +286,11 @@ STRINGS = {
         "model_pull_status_error": "Download failed: {error}",
         "model_pull_empty_name": "Please enter a model name.",
         "model_no_models_found": "No local models found",
+        # Extensions
+        "ext_btn": "⚡ Extensions",
+        "extensions_dialog_title": "Extensions Manager",
+        "extensions_header": "⚡ Local Extensions & Slash Commands",
+        "extensions_subhead": "Extend JUGNU with safe, offline productivity utilities and custom slash commands.",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -573,6 +578,11 @@ STRINGS = {
         "model_pull_status_error": "Download fail ho gaya: {error}",
         "model_pull_empty_name": "Kripya model ka naam daalein.",
         "model_no_models_found": "Koi local model nahi mila",
+        # Extensions
+        "ext_btn": "⚡ Extensions",
+        "extensions_dialog_title": "Extensions Manager",
+        "extensions_header": "⚡ Local Extensions aur Slash Commands",
+        "extensions_subhead": "JUGNU ko safe aur offline productivity utilities se extend karein.",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",

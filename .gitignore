@@ -16,6 +16,8 @@ jugnu_history.enc.*
 jugnu_settings.json
 jugnu_personas.json
 backups/
+jugnu_*.json
+jugnu_*.json.tmp
 
 # Environment variables / secrets
 .env

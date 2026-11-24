@@ -286,6 +286,11 @@ STRINGS = {
         "model_pull_status_error": "Download failed: {error}",
         "model_pull_empty_name": "Please enter a model name.",
         "model_no_models_found": "No local models found",
+        # Agent & Sandboxed Tools
+        "tool_card_title": "Tool Execution",
+        "tool_status_success": "Success",
+        "tool_status_error": "Error",
+        "tool_btn_details": "Details",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -573,6 +578,11 @@ STRINGS = {
         "model_pull_status_error": "Download fail ho gaya: {error}",
         "model_pull_empty_name": "Kripya model ka naam daalein.",
         "model_no_models_found": "Koi local model nahi mila",
+        # Agent & Sandboxed Tools
+        "tool_card_title": "Tool Chalaya Gaya",
+        "tool_status_success": "Safal",
+        "tool_status_error": "Truti",
+        "tool_btn_details": "Jankari",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",

@@ -286,6 +286,11 @@ STRINGS = {
         "model_pull_status_error": "Download failed: {error}",
         "model_pull_empty_name": "Please enter a model name.",
         "model_no_models_found": "No local models found",
+        # Memory Manager
+        "memory_btn": "🧠  Memory",
+        "memory_dialog_title": "User Memory & Preference Manager",
+        "memory_enabled": "Enable Persistent Memory",
+        "memory_clear_confirm": "Are you sure you want to delete all memory facts?",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -573,6 +578,11 @@ STRINGS = {
         "model_pull_status_error": "Download fail ho gaya: {error}",
         "model_pull_empty_name": "Kripya model ka naam daalein.",
         "model_no_models_found": "Koi local model nahi mila",
+        # Memory Manager
+        "memory_btn": "🧠  Yaadein",
+        "memory_dialog_title": "User Memory aur Pasand Manager",
+        "memory_enabled": "Persistent Memory Chalu Rakhein",
+        "memory_clear_confirm": "Kya aap sach me saari yaadein mitana chahte hain?",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
@@ -640,6 +650,14 @@ def build_system_prompt(language, now_text, persona=None):
         intro = persona.system_prompt.strip() + " "
     else:
         intro = SYSTEM_PROMPT_INTRO
-    return (intro
+    prompt = (intro
             + get_string(language, "prompt_language_rule")
             + SYSTEM_PROMPT_CLOCK.format(now=now_text))
+    try:
+        from memory import get_memory_store
+        mem_ctx = get_memory_store().build_memory_context()
+        if mem_ctx:
+            prompt += f"\n\n{mem_ctx}"
+    except Exception:
+        pass
+    return prompt

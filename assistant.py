@@ -114,6 +114,15 @@ def ask_ai(user_message, persona=None, model=None, attachments=None, images=None
     if isinstance(persona, str):
         persona = get_persona(persona)
     system_prompt = (persona.system_prompt + "\n\n") if persona and getattr(persona, "system_prompt", None) else SYSTEM_PROMPT
+    try:
+        from memory import get_memory_store, extract_facts
+        mem_ctx = get_memory_store().build_memory_context()
+        if mem_ctx:
+            system_prompt = f"{system_prompt}\n\n{mem_ctx}\n\n"
+        for ef in extract_facts(user_message):
+            get_memory_store().add_fact(category=ef["category"], key=ef["key"], value=ef["value"])
+    except Exception:
+        pass
     options = {"temperature": persona.temperature} if persona and hasattr(persona, "temperature") else None
     prompt_text = (
         assemble_prompt_with_attachments(user_message, attachments)
@@ -193,21 +202,10 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /models               - List installed Ollama models")
-    print("5. /model <name>         - Switch active Ollama model")
-    print("6. personas              - List all available assistant personas")
-    print("7. persona <name>        - Switch active persona (e.g. persona code)")
-    print("8. /attach <path>        - Attach a local code or text file")
-    print("9. /files                - List attached files")
-    print("10. /detach              - Clear all attachments")
-    print("11. /search <query>      - Search across conversation history")
-    print("12. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("13. /chats               - List all saved conversation history")
-    print("14. /schedule            - Manage proactive background tasks and cron jobs")
-    print("15. /shortcuts, /palette - View global keyboard shortcuts")
     print("16. /stats               - Show session inference performance analytics")
-    print("17. help                 - Show available commands")
-    print("18. bye                  - Exit the assistant")
+    print("17. /memory              - View and manage persistent user memory facts")
+    print("18. help                 - Show available commands")
+    print("19. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -496,6 +494,51 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
         # Performance analytics
         elif command in ["/stats", "/analytics", "/metrics"]:
             print(f"\nAssistant: {session_analytics.summary()}")
+
+        # Memory commands
+        elif command.startswith("/memory") or command.startswith("/remember") or command.startswith("/forget"):
+            from memory import get_memory_store, extract_facts
+            mem_store = get_memory_store()
+            if command == "/memory":
+                facts = mem_store.get_all_facts()
+                if not facts:
+                    print("\nAssistant: No memory facts stored. Use '/remember <fact>' to add one.")
+                else:
+                    status_text = "ENABLED" if mem_store.is_enabled() else "DISABLED"
+                    print(f"\nUser Memory ({len(facts)} facts, System: {status_text}):")
+                    for idx, f in enumerate(facts, 1):
+                        st = "●" if f.enabled else "○"
+                        print(f"{idx}. {st} [{f.category}] {f.key}: {f.value} (ID: {f.id})")
+            elif command.startswith("/remember"):
+                rem_text = user_input.split(maxsplit=1)[1].strip() if len(user_input.split(maxsplit=1)) > 1 else ""
+                if not rem_text:
+                    print("\nAssistant: Usage: /remember <fact or preference>")
+                else:
+                    extracted = extract_facts(rem_text)
+                    if extracted:
+                        cat = extracted[0]["category"]
+                        k = extracted[0]["key"]
+                        v = extracted[0]["value"]
+                    else:
+                        cat = "custom"
+                        k = "User Note"
+                        v = rem_text
+                    new_fact = mem_store.add_fact(category=cat, key=k, value=v)
+                    print(f"\nAssistant: Remembered [{new_fact.category}] '{new_fact.key}: {new_fact.value}'.")
+            elif command == "/forget-all":
+                mem_store.clear_all()
+                print("\nAssistant: Cleared all persistent user memory.")
+            elif command.startswith("/forget"):
+                query = user_input.split(maxsplit=1)[1].strip() if len(user_input.split(maxsplit=1)) > 1 else ""
+                if not query:
+                    print("\nAssistant: Usage: /forget <fact_id or search_query>")
+                else:
+                    matched = mem_store.search_facts(query)
+                    if not matched:
+                        print(f"\nAssistant: No memory fact matching '{query}' found.")
+                    else:
+                        deleted = mem_store.delete_fact(matched[0].id)
+                        print(f"\nAssistant: Forgot '{matched[0].key}: {matched[0].value}'.")
 
         # General AI question
         else:

@@ -1386,6 +1386,7 @@ class JugnuWindow(QMainWindow):
         self.scheduler.on_task_finished = self.on_scheduled_task_finished
         self.scheduler.start()
         self.automation_dialog = None
+        self.memory_dialog = None
         self.tray_icon = None
         try:
             if QSystemTrayIcon.isSystemTrayAvailable():
@@ -1472,6 +1473,12 @@ class JugnuWindow(QMainWindow):
         self.auto_btn.clicked.connect(self.open_automation_dialog)
         head.addWidget(self.auto_btn)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.open_automation_dialog)
+
+        self.memory_btn = QPushButton("🧠  Memory", objectName="memoryBtn")
+        self.memory_btn.setCursor(Qt.PointingHandCursor)
+        self.memory_btn.clicked.connect(self.open_memory_dialog)
+        head.addWidget(self.memory_btn)
+        QShortcut(QKeySequence("Ctrl+M"), self, self.open_memory_dialog)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
         self.stop_btn.setProperty("variant", "stop")
@@ -2156,6 +2163,14 @@ class JugnuWindow(QMainWindow):
         self.automation_dialog.show()
         self.automation_dialog.raise_()
         self.automation_dialog.activateWindow()
+
+    def open_memory_dialog(self):
+        if getattr(self, "memory_dialog", None) is None:
+            from memory_dialog import MemoryManagerDialog
+            self.memory_dialog = MemoryManagerDialog(self)
+        self.memory_dialog.show()
+        self.memory_dialog.raise_()
+        self.memory_dialog.activateWindow()
 
     def restore_from_tray(self):
         """Restore window when triggered from system tray."""

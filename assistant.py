@@ -34,6 +34,7 @@ from models import (
     resolve_active_model,
 )
 from personas import get_persona, list_personas
+from rag_engine import get_knowledge_base
 from scheduler import CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
 
@@ -193,21 +194,10 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /models               - List installed Ollama models")
-    print("5. /model <name>         - Switch active Ollama model")
-    print("6. personas              - List all available assistant personas")
-    print("7. persona <name>        - Switch active persona (e.g. persona code)")
-    print("8. /attach <path>        - Attach a local code or text file")
-    print("9. /files                - List attached files")
-    print("10. /detach              - Clear all attachments")
-    print("11. /search <query>      - Search across conversation history")
-    print("12. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("13. /chats               - List all saved conversation history")
-    print("14. /schedule            - Manage proactive background tasks and cron jobs")
-    print("15. /shortcuts, /palette - View global keyboard shortcuts")
     print("16. /stats               - Show session inference performance analytics")
-    print("17. help                 - Show available commands")
-    print("18. bye                  - Exit the assistant")
+    print("17. /rag                 - Local knowledge base RAG index & search")
+    print("18. help                 - Show available commands")
+    print("19. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -496,6 +486,52 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
         # Performance analytics
         elif command in ["/stats", "/analytics", "/metrics"]:
             print(f"\nAssistant: {session_analytics.summary()}")
+
+        # RAG / Local Knowledge Base commands
+        elif command.startswith("/rag") or command.startswith("rag"):
+            kb = get_knowledge_base()
+            args_str = user_input.split(maxsplit=1)[1].strip() if len(user_input.split(maxsplit=1)) > 1 else ""
+            subparts = args_str.split(maxsplit=1)
+            subcmd = subparts[0].lower() if subparts else "status"
+            subarg = subparts[1].strip() if len(subparts) > 1 else ""
+
+            if subcmd in ["status", ""]:
+                print(f"\nKnowledge Base Status:")
+                print(f"• Indexed Documents: {len(kb.indexed_files)}")
+                print(f"• Total Chunks:     {len(kb.chunks)}")
+                if kb.indexed_files:
+                    print("  Files:")
+                    for f in sorted(kb.indexed_files):
+                        print(f"   - {f}")
+            elif subcmd == "index":
+                if not subarg:
+                    print("\nAssistant: Usage: /rag index <folder_or_file_path>")
+                elif os.path.isdir(subarg):
+                    cnt = kb.add_directory(subarg, recursive=True)
+                    print(f"\nAssistant: Successfully indexed directory '{subarg}' ({cnt} chunks).")
+                elif os.path.isfile(subarg):
+                    cnt = kb.add_file(subarg)
+                    print(f"\nAssistant: Successfully indexed file '{subarg}' ({cnt} chunks).")
+                else:
+                    print(f"\nAssistant: Path '{subarg}' does not exist.")
+            elif subcmd == "search":
+                if not subarg:
+                    print("\nAssistant: Usage: /rag search <query>")
+                else:
+                    matches = kb.query(subarg, top_k=3)
+                    if not matches:
+                        print(f"\nAssistant: No relevant chunks found for '{subarg}'.")
+                    else:
+                        print(f"\nSearch results for '{subarg}':")
+                        for idx, m in enumerate(matches, 1):
+                            c = m["chunk"]
+                            print(f"{idx}. {c.doc_name} (RRF: {m['rrf_score']:.4f})")
+                            print(f"   {c.text[:120]}...\n")
+            elif subcmd == "clear":
+                kb.clear()
+                print("\nAssistant: Knowledge base index cleared.")
+            else:
+                print(f"\nAssistant: Unknown RAG action '{subcmd}'. Available: status, index, search, clear.")
 
         # General AI question
         else:

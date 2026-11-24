@@ -230,6 +230,7 @@ class FlatButton(tk.Label):
 
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
+from knowledge_dialog import KnowledgeBaseDialog
 from markdown_render import plain_text, render_html
 from models import (
     DEFAULT_MODEL,
@@ -241,6 +242,7 @@ from models import (
     resolve_active_model,
 )
 from personas import get_default_manager, get_persona, list_personas
+from rag_engine import KnowledgeBase, get_knowledge_base
 from scheduler import BackgroundScheduler, CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
 from strings import get_string, next_language
@@ -1387,6 +1389,10 @@ class JugnuWindow(QMainWindow):
         self.scheduler.start()
         self.automation_dialog = None
         self.tray_icon = None
+        kb_dir = os.path.dirname(self.settings_file) if os.path.dirname(self.settings_file) else os.getcwd()
+        self.kb = get_knowledge_base(kb_dir)
+        self.kb_dialog = None
+        self.rag_enabled = True
         try:
             if QSystemTrayIcon.isSystemTrayAvailable():
                 self.tray_icon = JugnuTrayIcon(self, self.scheduler)
@@ -1472,6 +1478,12 @@ class JugnuWindow(QMainWindow):
         self.auto_btn.clicked.connect(self.open_automation_dialog)
         head.addWidget(self.auto_btn)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.open_automation_dialog)
+
+        self.kb_btn = QPushButton("📚  Knowledge", objectName="kbBtn")
+        self.kb_btn.setCursor(Qt.PointingHandCursor)
+        self.kb_btn.clicked.connect(self.open_kb_dialog)
+        head.addWidget(self.kb_btn)
+        QShortcut(QKeySequence("Ctrl+Shift+K"), self, self.open_kb_dialog)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
         self.stop_btn.setProperty("variant", "stop")
@@ -1853,6 +1865,7 @@ class JugnuWindow(QMainWindow):
         self.theme_btn.setText(self.theme_button_text())
         self.header_title.setText(self.t("header_title"))
         self.auto_btn.setText(self.t("auto_btn"))
+        self.kb_btn.setText(self.t("kb_btn"))
         self.send_btn.setText(self.t("send_btn"))
         if hasattr(self, "attach_btn"):
             self.attach_btn.setToolTip(self.t("attach_file_btn"))
@@ -2156,6 +2169,14 @@ class JugnuWindow(QMainWindow):
         self.automation_dialog.show()
         self.automation_dialog.raise_()
         self.automation_dialog.activateWindow()
+
+    def open_kb_dialog(self):
+        if getattr(self, "kb_dialog", None) is None:
+            self.kb_dialog = KnowledgeBaseDialog(self, self.kb)
+        self.kb_dialog.refresh_list()
+        self.kb_dialog.show()
+        self.kb_dialog.raise_()
+        self.kb_dialog.activateWindow()
 
     def restore_from_tray(self):
         """Restore window when triggered from system tray."""
@@ -4142,6 +4163,13 @@ class JugnuWindow(QMainWindow):
             if answer is not None:
                 self.finish_answer(chat["id"], answer, False)
                 return
+
+        # RAG Context Grounding: retrieve relevant chunks from local knowledge base
+        if getattr(self, "rag_enabled", True) and hasattr(self, "kb") and self.kb.chunks:
+            rag_context, sources = self.kb.assemble_grounded_context(user_text, top_k=3)
+            if rag_context:
+                chat["messages"][-1]["rag_sources"] = sources
+                chat["messages"][-1]["grounded_context"] = rag_context
         self.ask_ollama(chat["id"])
 
     def create_streaming_bubble(self, chat_id, timestamp=None):

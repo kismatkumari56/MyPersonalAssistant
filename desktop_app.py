@@ -121,6 +121,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QWidget)
 
 import jugnu_core as core
+from history_import import preview_import, commit_import
 from analytics import InferenceMetrics
 from automation_dialog import AutomationDialog
 from conversation_tree import ConversationTree
@@ -1387,9 +1388,11 @@ class ModelPullDialog(QDialog):
 
 
 class JugnuWindow(QMainWindow):
-    def __init__(self, history_file=core.HISTORY_FILE, settings_file=core.SETTINGS_FILE):
+    def __init__(self, history_file=core.HISTORY_FILE, settings_file=core.SETTINGS_FILE,
+                 history_lock=None):
         super().__init__()
         self.history_file, self.settings_file = history_file, settings_file
+        self.history_lock = history_lock
         self.setWindowTitle(core.APP_TITLE)
         self.resize(1200, 760)
         self.setMinimumSize(850, 570)
@@ -1514,6 +1517,10 @@ class JugnuWindow(QMainWindow):
         self.auto_btn.setCursor(Qt.PointingHandCursor)
         self.auto_btn.clicked.connect(self.open_automation_dialog)
         head.addWidget(self.auto_btn)
+        self.import_btn = QPushButton("Import chats", objectName="importBtn")
+        self.import_btn.setCursor(Qt.PointingHandCursor)
+        self.import_btn.clicked.connect(self.open_history_import)
+        head.addWidget(self.import_btn)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.open_automation_dialog)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
@@ -1900,6 +1907,53 @@ class JugnuWindow(QMainWindow):
             core.save_history(self.chats, self.history_file)
         except (OSError, TypeError, ValueError) as error:
             self.set_status("status_save_error", error=error)
+
+    def open_history_import(self):
+        """Preview a portable JSON import and commit only after an explicit choice."""
+        if self.busy or getattr(self, "is_streaming", False) or self.tasks:
+            QMessageBox.information(self, "Import unavailable",
+                                    "Wait for active tasks to finish before importing conversations.")
+            return
+        import_path, _ = QFileDialog.getOpenFileName(
+            self, "Import conversations", "", "Conversation JSON (*.json)"
+        )
+        if not import_path:
+            return
+        try:
+            preview = preview_import(import_path, self.history_file)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Import unavailable", str(error))
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Preview conversation import")
+        dialog.setText(
+            f"New: {preview.new}\nDuplicates: {preview.duplicate}\n"
+            f"ID conflicts: {preview.conflicting}\nRejected records: {preview.rejected}"
+        )
+        skip_button = dialog.addButton("Import, skip conflicts", QMessageBox.AcceptRole)
+        fork_button = None
+        if preview.conflicting:
+            fork_button = dialog.addButton("Import, fork conflicts", QMessageBox.AcceptRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.exec()
+        if dialog.clickedButton() is None or dialog.clickedButton() not in (skip_button, fork_button):
+            return
+        choice = "fork" if dialog.clickedButton() is fork_button else "skip"
+        try:
+            result = commit_import(import_path, self.history_file,
+                                   conflict=choice, held_lock=self.history_lock,
+                                   expected_fingerprint=preview.fingerprint)
+        except (OSError, ValueError, RuntimeError) as error:
+            QMessageBox.warning(self, "Import failed", str(error))
+            return
+        if result.new or (choice == "fork" and result.conflicting):
+            self.chats = core.load_history(self.history_file)
+            self.refresh_history_list()
+            self.display_chat()
+        QMessageBox.information(self, "Import complete",
+                                f"Imported {result.new} new and "
+                                f"{result.conflicting if choice == 'fork' else 0} forked conversations.")
 
     # ---------- Voice ----------
     def toggle_voice(self):
@@ -4682,7 +4736,7 @@ def main():
         QMessageBox.critical(None, "Chat history unavailable", f"Could not lock chat history.\n\n{error}")
         return 1
     try:
-        window = JugnuWindow()
+        window = JugnuWindow(history_lock=lock)
         window.show()
         code = app.exec()
         finished = window.wait_for_tasks(2000)
